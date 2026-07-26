@@ -1,0 +1,4 @@
+interface:
+  display_name: "Annotate Web UI"
+  short_description: "Annotate local web pages and generate precise change specs"
+  default_prompt: "Use $annotate-web-ui to open my local web app, collect visual annotations, and generate an implementation-ready UI change request."
