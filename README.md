@@ -1,4 +1,4 @@
-# Annotate Web UI
+# annotate-web-ui
 
 A local-only Codex skill for converting visual annotations on a live or pure-static web page into an evidence-linked UI change request and implementation prompt.
 
