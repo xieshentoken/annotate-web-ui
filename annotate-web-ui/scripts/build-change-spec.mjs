@@ -1,51 +1,24 @@
 #!/usr/bin/env node
 
-import {
-  lstat,
-  readFile,
-  readdir,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { collectSourceFiles } from "./lib/source-files.mjs";
+import {
+  anchorCoverage,
+  describeCandidate,
+  resolverFacts,
+  resolveAnnotation,
+  sourceResolutionWarning,
+} from "./lib/source-resolve.mjs";
+import {
+  collectLocaleFiles,
+  createSymbolIndex,
+} from "./lib/symbol-index.mjs";
 import {
   formatIntentOperations,
   validateSessionDirectory,
 } from "./validate-session.mjs";
-
-const SOURCE_EXTENSIONS = new Set([
-  ".html",
-  ".htm",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".ts",
-  ".tsx",
-  ".vue",
-  ".svelte",
-  ".astro",
-  ".css",
-  ".scss",
-  ".sass",
-  ".less",
-]);
-
-const SKIP_DIRECTORIES = new Set([
-  ".git",
-  ".hg",
-  ".svn",
-  ".next",
-  ".nuxt",
-  ".svelte-kit",
-  ".symbui",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
-  "vendor",
-]);
 
 function parseArgs(argv) {
   const result = {};
@@ -79,125 +52,14 @@ function quote(value) {
   return JSON.stringify(clip(value, 300));
 }
 
-async function collectSourceFiles(root) {
-  const files = [];
-  const queue = [root];
-
-  while (queue.length > 0 && files.length < 5000) {
-    const current = queue.pop();
-    const entries = await readdir(current, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") && !entry.name.startsWith(".env")) {
-        if (entry.isDirectory()) continue;
-      }
-      if (SKIP_DIRECTORIES.has(entry.name)) continue;
-      const absolute = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        queue.push(absolute);
-        continue;
-      }
-      if (!SOURCE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        continue;
-      }
-      const info = await stat(absolute);
-      if (info.size <= 1_500_000) files.push(absolute);
-    }
-  }
-
-  return files;
-}
-
-function queryEvidence(annotation) {
-  const target = annotation.target || {};
-  const attributes = target.attributes || {};
-  const queries = [];
-
-  const add = (kind, value, score) => {
-    const needle = clip(value, 240);
-    if (needle.length >= 2) queries.push({ kind, needle, score });
-  };
-
-  add("test-id", target.testId || attributes["data-testid"], 100);
-  add("source-component", target.componentName, 92);
-  add("element-id", target.id, 86);
-  add("aria-label", target.accessibleName || attributes["aria-label"], 76);
-  add("visible-text", target.text, 64);
-  add("placeholder", attributes.placeholder, 60);
-  add("href", attributes.href, 54);
-
-  return queries;
-}
-
-function lineNumberFor(text, index) {
-  return text.slice(0, index).split("\n").length;
-}
-
-async function resolveAnnotation(annotation, repoPath, sourceFiles) {
-  if (annotation.kind === "redact") {
-    return { ...annotation, sourceCandidates: [] };
-  }
-
-  const candidates = new Map();
-  const explicitSource = annotation.target?.sourceFile;
-  if (explicitSource) {
-    const absolute = path.resolve(repoPath, explicitSource);
-    const relative = path.relative(repoPath, absolute);
-    if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
-      try {
-        const info = await lstat(absolute);
-        if (info.isFile()) {
-          candidates.set(absolute, {
-            file: relative,
-            line: Number(annotation.target?.sourceLine) || 1,
-            score: 10_000,
-            confidence: "exact",
-            evidence: ["development source metadata"],
-          });
-        }
-      } catch {
-        // Keep resolving through repository evidence.
-      }
-    }
-  }
-
-  const queries = queryEvidence(annotation);
-  for (const absolute of sourceFiles) {
-    let text;
-    try {
-      text = await readFile(absolute, "utf8");
-    } catch {
-      continue;
-    }
-    let total = 0;
-    let bestIndex = -1;
-    const evidence = [];
-    for (const query of queries) {
-      const index = text.indexOf(query.needle);
-      if (index === -1) continue;
-      total += query.score;
-      if (bestIndex === -1) bestIndex = index;
-      evidence.push(`${query.kind}: ${quote(query.needle)}`);
-    }
-    if (total === 0) continue;
-    const existing = candidates.get(absolute);
-    if (existing?.confidence === "exact") continue;
-    if (existing?.score >= total) continue;
-    candidates.set(absolute, {
-      file: path.relative(repoPath, absolute),
-      line: lineNumberFor(text, bestIndex),
-      score: total,
-      confidence: total >= 100 ? "high" : total >= 70 ? "medium" : "low",
-      evidence,
-    });
-  }
-
-  const sourceCandidates = [...candidates.values()]
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 5);
-
-  return { ...annotation, sourceCandidates };
-}
+/* Resolution is done by `lib/symbol-index.mjs`. It reads and parses every
+ * source file once and answers every annotation from that index, instead of
+ * re-scanning the whole tree per annotation with `indexOf` — which also meant
+ * a `data-testid` mentioned in a comment scored as high as the real element.
+ *
+ * The half of that which needs the filesystem lives in
+ * `lib/source-resolve.mjs`, shared with the round-based consolidator.
+ */
 
 function describeTarget(annotation) {
   const target = annotation.target;
@@ -228,7 +90,82 @@ function describeGeometry(annotation) {
   )}, w=${Math.round(geometry.width)}, h=${Math.round(geometry.height)}`;
 }
 
-function changeRequestMarkdown(session, resolvedAnnotations, sessionDir) {
+/* Why this section exists: a resolver that silently degrades is worse than one
+ * that fails. When `@babel/parser` is missing, every candidate is lexically
+ * derived and none of them can reach high confidence — the agent reading the
+ * change request needs to know that before it trusts a line number.
+ *
+ * The same argument applies one level up. A run with no build-time anchors
+ * never reaches `exact`, and every per-annotation candidate says so, but a
+ * reader who skims the summary would not notice that the whole run is
+ * text-derived. So the count goes next to the engine, with the one action that
+ * changes it. */
+function resolverSection(index, resolvedAnnotations) {
+  const facts = resolverFacts(index);
+  const lines = ["## Resolver", ""];
+  if (facts.reason === "no-files") {
+    lines.push(
+      "- Engine: nothing indexed — no source files were found under the repository root",
+    );
+  } else if (facts.reason === "no-parser") {
+    lines.push("- Engine: lexical only — `@babel/parser` was not found");
+  } else if (facts.reason === "no-parse-success") {
+    lines.push(
+      `- Engine: lexical — \`@babel/parser\` loaded from \`${facts.parserFrom}\` but no file parsed successfully`,
+    );
+  } else {
+    lines.push(`- Engine: AST (\`@babel/parser\` from \`${facts.parserFrom}\`)`);
+  }
+  lines.push(
+    `- Files scanned: ${facts.files} (${facts.parsed} parsed, ${facts.lexical} scanned lexically, ${facts.failed} parse failures)`,
+  );
+  lines.push(`- Sites indexed: ${facts.sites} across ${facts.elements} elements`);
+  lines.push(
+    facts.locales > 0
+      ? `- Locale files indexed: ${facts.locales} (${facts.i18nEntries} messages); visible text is reverse-mapped to i18n keys before searching source`
+      : "- Locale files indexed: none; visible text is matched literally against source",
+  );
+  if (facts.reason === "no-parser" && facts.failures.length > 0) {
+    lines.push("- Parser search:");
+    for (const failure of facts.failures.slice(0, 5)) {
+      lines.push(`  - ${markdown(failure)}`);
+    }
+  }
+  lines.push(...anchorCoverageLines(resolvedAnnotations));
+  lines.push("");
+  return lines;
+}
+
+function anchorCoverageWarning(resolvedAnnotations) {
+  const { total, anchored, orphanedMetadata } =
+    anchorCoverage(resolvedAnnotations);
+  if (total === 0 || anchored === total) return null;
+  if (anchored === 0 && orphanedMetadata === 0) {
+    return "No annotation resolved from development source metadata, so every target is a text-derived candidate. Wiring the development-only injectors (references/build-anchors.md) is what raises a candidate to exact confidence.";
+  }
+  return `${total - anchored} of ${total} annotations have no development source metadata candidate, so those targets are text-derived candidates.`;
+}
+
+function anchorCoverageLines(resolvedAnnotations) {
+  const { total, anchored, orphanedMetadata } =
+    anchorCoverage(resolvedAnnotations);
+  if (total === 0) return [];
+  if (anchored === total) {
+    return [
+      `- Build-time anchors: all ${total} annotations resolved from \`data-ui-source\` metadata`,
+    ];
+  }
+  return [
+    anchored === 0
+      ? "- Build-time anchors: none resolved — no candidate came from `data-ui-source` metadata, so every target below is a text-derived candidate rather than the element the user pointed at"
+      : `- Build-time anchors: ${anchored}/${total} resolved from \`data-ui-source\` metadata; the rest are text-derived candidates`,
+    orphanedMetadata > 0
+      ? `  - ${orphanedMetadata} annotation(s) carried \`data-ui-source\` metadata that produced no candidate; the referenced file may have moved or been renamed since the page was captured.`
+      : "  - Wiring the development-only injectors (`references/build-anchors.md`) is what raises a candidate to `exact`, and what lets the revision diff tell a real change apart from a cascade of shifted siblings.",
+  ];
+}
+
+function changeRequestMarkdown(session, resolvedAnnotations, sessionDir, index) {
   const statesById = new Map(session.states.map((state) => [state.id, state]));
   const changes = resolvedAnnotations.filter(
     (annotation) => annotation.kind !== "redact",
@@ -244,6 +181,7 @@ function changeRequestMarkdown(session, resolvedAnnotations, sessionDir) {
     `- Captured: ${session.completedAt || session.createdAt}`,
     `- Evidence directory: \`${sessionDir}\``,
     "",
+    ...resolverSection(index, resolvedAnnotations),
     "## Requested changes",
     "",
   ];
@@ -277,17 +215,23 @@ function changeRequestMarkdown(session, resolvedAnnotations, sessionDir) {
       unresolved.push(`${annotation.id}: no reliable source candidate`);
     } else {
       for (const candidate of annotation.sourceCandidates) {
-        lines.push(
-          `  - \`${candidate.file}:${candidate.line}\` — ${candidate.confidence} confidence; ${candidate.evidence.join("; ")}`,
-        );
+        lines.push(`  - ${describeCandidate(candidate)}`);
+        if (candidate.evidence.length > 0) {
+          lines.push(`    - evidence: ${candidate.evidence.join("; ")}`);
+        }
       }
-      if (
-        annotation.sourceCandidates.length > 1 &&
-        annotation.sourceCandidates[0].score -
-          annotation.sourceCandidates[1].score <
-          25
-      ) {
+      const [best, second] = annotation.sourceCandidates;
+      if (annotation.sourceCandidates.length > 1 && best.score - second.score < 25) {
         unresolved.push(`${annotation.id}: multiple similarly ranked source candidates`);
+      }
+      if (best.confidence === "low") {
+        unresolved.push(
+          `${annotation.id}: best candidate is low confidence (\`${best.file}:${best.line}\`) — verify before editing`,
+        );
+      } else if (best.confidence === "medium") {
+        unresolved.push(
+          `${annotation.id}: best candidate is medium confidence (\`${best.file}:${best.line}\`) — confirm the element before editing`,
+        );
       }
     }
     lines.push("");
@@ -324,7 +268,7 @@ function changeRequestMarkdown(session, resolvedAnnotations, sessionDir) {
   return lines.join("\n");
 }
 
-function implementationPrompt(session, resolvedAnnotations, sessionDir) {
+function implementationPrompt(session, resolvedAnnotations, sessionDir, index) {
   const actionable = resolvedAnnotations.filter(
     (annotation) => annotation.kind !== "redact",
   );
@@ -336,19 +280,29 @@ function implementationPrompt(session, resolvedAnnotations, sessionDir) {
     `Change request: ${path.join(sessionDir, "change-request.md")}`,
     `Structured annotations: ${path.join(sessionDir, "annotations.resolved.json")}`,
     "",
+    `Source resolution: ${
+      index.engine === "ast"
+        ? "AST-based (elements, attributes, and declarations are indexed with exact positions)"
+        : "lexical only, so no candidate reaches high confidence"
+    }.`,
+    "",
     "Instructions:",
     "1. Read the change request, structured annotations, and referenced screenshots before editing.",
     "2. Treat source matches as candidates unless the annotation contains explicit source metadata.",
-    "3. Implement only the numbered changes below and preserve every stated invariant.",
-    "4. If evidence is ambiguous, stop and report the exact unresolved target instead of guessing.",
-    "5. Run the project's existing relevant checks and visually verify the captured route and viewport.",
+    "3. Each candidate carries a `confidence` and a `resolver`; open the file before editing when confidence is not `high` or `exact`.",
+    "4. A candidate's `element` field names the enclosing element and component. If it disagrees with the line number, trust the element and re-read the file.",
+    "5. Implement only the numbered changes below and preserve every stated invariant.",
+    "6. If evidence is ambiguous, stop and report the exact unresolved target instead of guessing.",
+    "7. Run the project's existing relevant checks and visually verify the captured route and viewport.",
     "",
     "Numbered changes:",
   ];
   for (const annotation of actionable) {
     const changeTypes = formatIntentOperations(annotation.intent);
+    const best = annotation.sourceCandidates?.[0];
+    const where = best ? ` @ ${best.file}:${best.line} (${best.confidence})` : "";
     lines.push(
-      `- ${annotation.id}: ${clip(annotation.intent?.expected, 600)} [types=${changeTypes || "unspecified"}, scope=${annotation.intent?.scope || "element"}, breakpoint=${annotation.intent?.breakpoint || "all"}]`,
+      `- ${annotation.id}${where}: ${clip(annotation.intent?.expected, 600)} [types=${changeTypes || "unspecified"}, scope=${annotation.intent?.scope || "element"}, breakpoint=${annotation.intent?.breakpoint || "all"}]`,
     );
   }
   lines.push("");
@@ -367,12 +321,35 @@ export async function buildChangeSpec({ sessionDir, repoPath }) {
     );
   }
 
+  /* One pass over the repository, then every annotation is answered from the
+   * index. The previous shape re-read and re-scanned every source file once
+   * per annotation.
+   */
   const sourceFiles = await collectSourceFiles(absoluteRepoPath);
+  const localeFiles = await collectLocaleFiles(absoluteRepoPath);
+  const index = await createSymbolIndex({
+    root: absoluteRepoPath,
+    files: sourceFiles,
+    localeFiles,
+  });
+
   const resolvedAnnotations = [];
   for (const annotation of validation.session.annotations) {
     resolvedAnnotations.push(
-      await resolveAnnotation(annotation, absoluteRepoPath, sourceFiles),
+      await resolveAnnotation(annotation, absoluteRepoPath, index),
     );
+  }
+
+  const warnings = [...validation.warnings];
+  const degradation = sourceResolutionWarning(index);
+  if (degradation) warnings.push(degradation);
+  const anchorGap = anchorCoverageWarning(resolvedAnnotations);
+  if (anchorGap) warnings.push(anchorGap);
+  for (const failure of index.parseErrors.slice(0, 5)) {
+    warnings.push(`Parse failed for ${failure.file}: ${failure.message}`);
+  }
+  if (index.parseErrors.length > 5) {
+    warnings.push(`${index.parseErrors.length - 5} further files failed to parse.`);
   }
 
   const resolvedPath = path.join(
@@ -396,6 +373,7 @@ export async function buildChangeSpec({ sessionDir, repoPath }) {
       validation.session,
       resolvedAnnotations,
       absoluteSessionDir,
+      index,
     ),
     "utf8",
   );
@@ -405,6 +383,7 @@ export async function buildChangeSpec({ sessionDir, repoPath }) {
       validation.session,
       resolvedAnnotations,
       absoluteSessionDir,
+      index,
     ),
     "utf8",
   );
@@ -413,7 +392,12 @@ export async function buildChangeSpec({ sessionDir, repoPath }) {
     requestPath,
     promptPath,
     resolvedPath,
-    warnings: validation.warnings,
+    warnings,
+    resolver: {
+      engine: index.engine,
+      parserFrom: index.parser.from,
+      stats: index.stats,
+    },
   };
 }
 

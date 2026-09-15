@@ -1,0 +1,1369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SymbUI 修改对比与复审</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --surface-2: #f1efe8;
+    --border: rgba(0,0,0,.14);
+    --border-strong: rgba(0,0,0,.3);
+    --text: #1c1c1a;
+    --text-2: #5f5e5a;
+    --text-3: #888780;
+    --accent: #185fa5;
+    --accent-soft: #e6f1fb;
+    --ok: #3b6d11;
+    --ok-soft: #eaf3de;
+    --warn: #854f0b;
+    --warn-soft: #faeeda;
+    --bad: #a32d2d;
+    --bad-soft: #fcebeb;
+    --add: #3b6d11;
+    --remove: #a32d2d;
+    --moved: #185fa5;
+    --resized: #534ab7;
+    --restyled: #993c1d;
+    --radius: 8px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 400 13px/1.5 var(--font);
+    color: var(--text);
+    background: var(--bg);
+    overflow: hidden;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  .app { display: flex; flex-direction: column; height: 100%; }
+
+  .topbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .brand { font-weight: 500; font-size: 14px; margin-right: 4px; }
+  .meta { color: var(--text-3); font-size: 12px; }
+  .spacer { flex: 1; }
+
+  .seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .seg button {
+    border: 0; background: var(--surface); padding: 5px 10px;
+    cursor: pointer; font-size: 12px; color: var(--text-2);
+    border-right: 1px solid var(--border);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button:hover { background: var(--surface-2); }
+  .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+  .btn {
+    border: 1px solid var(--border); background: var(--surface);
+    padding: 5px 10px; border-radius: var(--radius); cursor: pointer;
+    font-size: 12px; color: var(--text-2);
+  }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  main { display: flex; flex: 1; min-height: 0; }
+
+  .stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .toolbar {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .viewport { flex: 1; overflow: auto; background: var(--surface-2); padding: 16px; }
+  .canvas-row { display: flex; gap: 16px; align-items: flex-start; justify-content: center; min-width: min-content; }
+  .pane-wrap { display: flex; flex-direction: column; gap: 6px; }
+  .pane-label { font-size: 11px; color: var(--text-3); text-align: center; }
+  .pane {
+    position: relative; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; flex: none;
+  }
+  .pane img { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+  .pane .layer { position: absolute; inset: 0; }
+  .pane .ovl { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .pane.hidden { display: none; }
+  .pane .divider {
+    position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent);
+    cursor: ew-resize; z-index: 5; display: none;
+  }
+  .pane .divider::after {
+    content: ""; position: absolute; top: 50%; left: 50%; width: 26px; height: 26px;
+    transform: translate(-50%, -50%); border-radius: 50%;
+    background: var(--accent); border: 2px solid #fff;
+  }
+  .pane.mode-slider .divider { display: block; }
+  .pane.mode-slider .img-before { clip-path: inset(0 calc(100% - var(--split, 50%)) 0 0); }
+  .pane.mode-blink .img-before { display: none; }
+  .pane.mode-blink.show-before .img-before { display: block; }
+  .pane.mode-blink.show-before .img-after { visibility: hidden; }
+  .pane .heat { display: none; }
+  .pane.mode-heatmap .img-before { display: none; }
+  .pane.mode-heatmap .heat { display: block; }
+  .pane.mode-heatmap .img-after { opacity: .45; }
+  .pane .band { fill: rgba(24,95,165,.12); stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; }
+  .pane .hit { fill: rgba(24,95,165,.10); stroke: var(--accent); stroke-width: 1; }
+  .pane .sel { fill: rgba(24,95,165,.16); stroke: var(--accent); stroke-width: 1.5; }
+  .pane .ghost { fill: rgba(83,74,183,.18); stroke: #534ab7; stroke-width: 1.5; stroke-dasharray: 5 3; }
+  .pane .handle { fill: #fff; stroke: var(--accent); stroke-width: 1.5; cursor: nwse-resize; }
+  .pane .handle.n, .pane .handle.s { cursor: ns-resize; }
+  .pane .handle.e, .pane .handle.w { cursor: ew-resize; }
+  .pane .anno { fill: none; stroke: var(--bad); stroke-width: 2; }
+  .pane .anno-dot { fill: var(--bad); }
+  .pane .anno-redact { fill: rgba(0,0,0,.55); }
+  .pane .anno-label {
+    font: 500 11px var(--font); fill: #fff;
+  }
+  .pane .anno-label-bg { fill: var(--bad); }
+  .pane .cluster { fill: none; stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .pane.cluster-off .cluster { display: none; }
+
+  .sidebar {
+    width: 380px; flex: none; border-left: 1px solid var(--border);
+    background: var(--surface); display: flex; flex-direction: column; min-height: 0;
+  }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tabs button {
+    flex: 1; border: 0; background: var(--surface); padding: 9px 6px;
+    cursor: pointer; font-size: 12px; color: var(--text-2);
+    border-bottom: 2px solid transparent;
+  }
+  .tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+  .tab-panel { flex: 1; overflow: auto; padding: 10px; display: none; }
+  .tab-panel.active { display: block; }
+
+  .card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 9px 10px; margin-bottom: 8px; background: var(--surface);
+  }
+  .card.clickable { cursor: pointer; }
+  .card.clickable:hover { background: var(--surface-2); }
+  .card.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .card h4 { margin: 0 0 5px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .card p { margin: 3px 0 0; color: var(--text-2); font-size: 12px; }
+  .muted { color: var(--text-3); font-size: 12px; }
+  .empty { color: var(--text-3); font-size: 12px; padding: 14px 4px; text-align: center; }
+
+  .tag {
+    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px;
+    background: var(--surface-2); color: var(--text-2); white-space: nowrap;
+  }
+  .tag.added { background: var(--ok-soft); color: var(--ok); }
+  .tag.removed { background: var(--bad-soft); color: var(--bad); }
+  .tag.moved { background: var(--accent-soft); color: var(--accent); }
+  .tag.resized { background: #eeedfe; color: #534ab7; }
+  .tag.restyled { background: #faece7; color: #993c1d; }
+  .tag.satisfied { background: var(--ok-soft); color: var(--ok); }
+  .tag.partial { background: var(--warn-soft); color: var(--warn); }
+  .tag.violated { background: var(--bad-soft); color: var(--bad); }
+  .tag.unverified { background: var(--surface-2); color: var(--text-2); }
+
+  .field { margin-bottom: 9px; }
+  .field label { display: block; font-size: 11px; color: var(--text-2); margin-bottom: 4px; }
+  .field input[type="text"], .field textarea, .field select {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface); resize: vertical;
+  }
+  .field textarea { min-height: 54px; }
+  .ops { display: flex; flex-wrap: wrap; gap: 5px; }
+  .ops label {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px;
+    cursor: pointer; color: var(--text-2); margin: 0;
+  }
+  .ops input { margin: 0; }
+  .ops label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; }
+  .kv { font-family: var(--mono); font-size: 11px; color: var(--text-2); word-break: break-all; }
+  .diff-line { font-family: var(--mono); font-size: 11px; margin-top: 3px; }
+  .diff-line .from { color: var(--bad); text-decoration: line-through; }
+  .diff-line .to { color: var(--ok); }
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: #1c1c1a; color: #fff; padding: 8px 14px; border-radius: 999px;
+    font-size: 12px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+  }
+  .toast.show { opacity: 1; }
+  .hint { font-size: 11px; color: var(--text-3); padding: 6px 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <span class="brand">SymbUI 复审</span>
+    <span class="meta" id="meta"></span>
+    <span class="spacer"></span>
+    <div class="seg" id="modeSeg" role="group" aria-label="对比模式">
+      <button data-mode="side" aria-pressed="true">并排</button>
+      <button data-mode="slider" aria-pressed="false">滑块</button>
+      <button data-mode="blink" aria-pressed="false">闪烁</button>
+      <button data-mode="heatmap" aria-pressed="false">热力图</button>
+    </div>
+    <div class="seg" id="zoomSeg" role="group" aria-label="缩放">
+      <button data-zoom="fit" aria-pressed="true">适应</button>
+      <button data-zoom="1" aria-pressed="false">100%</button>
+      <button data-zoom="0.5" aria-pressed="false">50%</button>
+    </div>
+    <button class="btn" id="toggleClusters">变更框</button>
+    <button class="btn primary" id="exportBtn">保存复审结果</button>
+  </div>
+
+  <main>
+    <section class="stage">
+      <div class="toolbar">
+        <div class="seg" id="toolSeg" role="group" aria-label="工具">
+          <button data-tool="inspect" aria-pressed="true">查看</button>
+          <button data-tool="select" aria-pressed="false">框选</button>
+          <button data-tool="move" aria-pressed="false">拖动</button>
+          <button data-tool="resize" aria-pressed="false">缩放</button>
+        </div>
+        <div class="seg" id="kindSeg" role="group" aria-label="标注类型">
+          <button data-kind="box" aria-pressed="true">方框</button>
+          <button data-kind="point" aria-pressed="false">点位</button>
+          <button data-kind="arrow" aria-pressed="false">箭头</button>
+          <button data-kind="redact" aria-pressed="false">涂抹</button>
+        </div>
+        <span class="spacer"></span>
+        <span class="meta" id="statusLine"></span>
+        <button class="btn" id="undoBtn">撤销</button>
+        <button class="btn" id="clearSelBtn">清空选择</button>
+      </div>
+      <div class="viewport" id="viewport">
+        <div class="canvas-row" id="canvasRow"></div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="diff" aria-selected="true">本轮变更</button>
+        <button role="tab" data-tab="verdict" aria-selected="false">上轮判定</button>
+        <button role="tab" data-tab="anno" aria-selected="false">我的标注</button>
+      </div>
+
+      <div class="tab-panel active" data-panel="diff" id="panelDiff"></div>
+
+      <div class="tab-panel" data-panel="verdict" id="panelVerdict"></div>
+
+      <div class="tab-panel" data-panel="anno" id="panelAnno">
+        <div id="editorHost"></div>
+        <div id="annoList"></div>
+      </div>
+    </aside>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+const OPERATION_LABELS = {
+  layout: "布局", style: "样式", content: "内容", interaction: "交互",
+  add: "新增", remove: "删除", fix: "问题修复",
+};
+const SCOPE_LABELS = { element: "仅此元素", repeated: "同组件全部", page: "整页" };
+const BREAKPOINT_LABELS = { all: "全部断点", current: "仅当前", desktop: "桌面", tablet: "平板", mobile: "手机" };
+const KIND_COLOR = { added: "#3b6d11", removed: "#a32d2d", moved: "#185fa5", resized: "#534ab7", restyled: "#993c1d" };
+const KIND_LABEL = { added: "新增", removed: "删除", moved: "位移", resized: "尺寸", restyled: "样式", reordered: "顺序" };
+const HANDLES = ["nw","n","ne","e","se","s","sw","w"];
+
+const app = {
+  data: null,
+  stateId: null,
+  mode: "side",
+  zoom: "fit",
+  tool: "inspect",
+  kind: "box",
+  selection: [],
+  annotations: [],
+  verdicts: {},
+  activeId: null,
+  hoverKey: null,
+  showClusters: true,
+  showDerived: false,
+  heat: new Map(),
+  drag: null,
+  band: null,
+  draw: null,
+  split: 0.5,
+  blinkTimer: null,
+  blinkOn: false,
+  undo: [],
+};
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, attrs = {}, children = []) => {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of [].concat(children)) {
+    if (child == null) continue;
+    node.append(typeof child === "string" ? document.createTextNode(child) : child);
+  }
+  return node;
+};
+const svg = (tag, attrs = {}) => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null) continue;
+    node.setAttribute(key, value);
+  }
+  return node;
+};
+const round = (n) => Math.round(n);
+const area = (r) => Math.max(0, r.width) * Math.max(0, r.height);
+
+function toast(message) {
+  const node = $("#toast");
+  node.textContent = message;
+  node.classList.add("show");
+  clearTimeout(node._t);
+  node._t = setTimeout(() => node.classList.remove("show"), 2200);
+}
+
+/* ---------------------------------------------------------------- loading */
+
+async function load() {
+  if (window.__REVIEW__) return window.__REVIEW__;
+  const response = await fetch("review.json", { cache: "no-store" });
+  if (!response.ok) throw new Error(`review.json ${response.status}`);
+  return response.json();
+}
+
+function currentState() {
+  return app.data.states.find((state) => state.stateId === app.stateId) || app.data.states[0];
+}
+
+/* ------------------------------------------------------- pixel comparison */
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`无法加载 ${src}`));
+    image.src = src;
+  });
+}
+
+async function computeHeat(state) {
+  if (app.heat.has(state.stateId)) return app.heat.get(state.stateId);
+  const [before, after] = await Promise.all([
+    loadImage(state.before.image),
+    loadImage(state.after.image),
+  ]);
+  const width = Math.min(before.naturalWidth, after.naturalWidth);
+  const height = Math.min(before.naturalHeight, after.naturalHeight);
+  const read = (image) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0, width, height);
+    return context.getImageData(0, 0, width, height).data;
+  };
+  const a = read(before);
+  const b = read(after);
+  const output = new ImageData(width, height);
+  const data = output.data;
+  let changed = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    const dr = Math.abs(a[index] - b[index]);
+    const dg = Math.abs(a[index + 1] - b[index + 1]);
+    const db = Math.abs(a[index + 2] - b[index + 2]);
+    const magnitude = Math.max(dr, dg, db);
+    if (magnitude > 12) {
+      changed += 1;
+      const alpha = Math.min(0.85, 0.25 + magnitude / 255);
+      data[index] = 226;
+      data[index + 1] = 75;
+      data[index + 2] = 74;
+      data[index + 3] = Math.round(alpha * 255);
+    }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").putImageData(output, 0, 0);
+  const result = { canvas, width, height, ratio: changed / (width * height) };
+  app.heat.set(state.stateId, result);
+  return result;
+}
+
+/* --------------------------------------------------------------- geometry */
+
+function scaleFor(state) {
+  const viewport = $("#viewport");
+  const available = viewport.clientWidth - 32 - (app.mode === "side" ? 16 : 0);
+  const columns = app.mode === "side" ? 2 : 1;
+  const perPane = available / columns;
+  if (app.zoom === "fit") {
+    return Math.min(1, Math.max(0.15, perPane / state.viewport.width));
+  }
+  return Number(app.zoom);
+}
+
+function elementAt(state, x, y) {
+  let best = null;
+  for (const element of state.after.elements) {
+    if (!element.visible) continue;
+    const rect = element.rect;
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (x < rect.x || y < rect.y || x > rect.x + rect.width || y > rect.y + rect.height) continue;
+    if (!best || area(rect) < area(best.rect)) best = element;
+  }
+  return best;
+}
+
+function elementsIn(state, rect) {
+  const found = [];
+  for (const element of state.after.elements) {
+    if (!element.visible) continue;
+    const r = element.rect;
+    if (r.width <= 0 || r.height <= 0) continue;
+    const overlapX = Math.min(r.x + r.width, rect.x + rect.width) - Math.max(r.x, rect.x);
+    const overlapY = Math.min(r.y + r.height, rect.y + rect.height) - Math.max(r.y, rect.y);
+    if (overlapX <= 0 || overlapY <= 0) continue;
+    if ((overlapX * overlapY) / area(r) < 0.5) continue;
+    found.push(element);
+  }
+  return found;
+}
+
+function targetOf(element) {
+  if (!element) return null;
+  return {
+    tag: element.tag,
+    id: element.id || "",
+    role: element.role || "",
+    accessibleName: element.name || "",
+    text: element.text || "",
+    testId: element.testId || "",
+    selector: element.selector || "",
+    attributes: element.attributes || {},
+    rect: element.rect,
+    anchor: element.anchor || null,
+    sourceFile: element.anchor ? element.anchor.file : "",
+    sourceLine: element.anchor ? element.anchor.line : null,
+    componentName: element.anchor ? element.anchor.component || "" : "",
+    reuseCount: element.reuseCount ?? null,
+  };
+}
+
+function clustersFor(key) {
+  const state = currentState();
+  return state.clusters.filter((cluster) => cluster.key === key);
+}
+
+/* ---------------------------------------------------------------- render */
+
+function render() {
+  const state = currentState();
+  if (!state) return;
+  const scale = scaleFor(state);
+  $("#meta").textContent = `${app.data.sessionId} · ${app.data.roundId} · ${app.data.targetUrl || ""}`;
+  const primaryCount = state.clusters.filter((cluster) => !cluster.derived).length;
+  const derivedCount = state.clusters.length - primaryCount;
+  $("#statusLine").textContent =
+    `视口 ${state.viewport.width}×${state.viewport.height} · 直接改动 ${primaryCount} 处` +
+    (derivedCount ? ` · 连带位移 ${derivedCount} 处` : "") +
+    ` · 已选 ${app.selection.length}`;
+
+  const row = $("#canvasRow");
+  row.replaceChildren();
+  const size = {
+    width: round(state.viewport.width * scale),
+    height: round(state.viewport.height * scale),
+  };
+
+  if (app.mode === "side") {
+    row.append(
+      el("div", { class: "pane-wrap" }, [
+        el("div", { class: "pane-label", text: "修改前" }),
+        el("div", { class: "pane" }, [el("img", { src: state.before.image, alt: "修改前" })]),
+      ]),
+    );
+  }
+
+  const pane = el("div", { class: `pane mode-${app.mode}${app.showClusters ? "" : " cluster-off"}` });
+  pane.style.width = `${size.width}px`;
+  pane.style.height = `${size.height}px`;
+  pane.style.setProperty("--split", `${app.split * 100}%`);
+
+  const after = el("img", { class: "layer img-after", src: state.after.image, alt: "修改后" });
+  const before = el("img", { class: "layer img-before", src: state.before.image, alt: "" });
+  const heat = el("canvas", { class: "layer heat" });
+  const overlay = svg("svg", { class: "ovl", viewBox: `0 0 ${state.viewport.width} ${state.viewport.height}` });
+  const divider = el("div", { class: "divider" });
+
+  pane.append(before, after, heat, overlay, divider);
+  row.append(el("div", { class: "pane-wrap" }, [
+    el("div", { class: "pane-label", text: "修改后（可标注）" }),
+    pane,
+  ]));
+
+  if (app.mode === "heatmap") {
+    computeHeat(state).then((result) => {
+      heat.width = result.width;
+      heat.height = result.height;
+      heat.getContext("2d").drawImage(result.canvas, 0, 0);
+    });
+  }
+
+  bindPane(pane, overlay, state, scale);
+  paintOverlay(overlay, state, scale);
+  renderSidebar();
+}
+
+function paintOverlay(overlay, state, scale) {
+  overlay.replaceChildren();
+
+  if (app.showClusters) {
+    for (const cluster of state.clusters) {
+      if (!cluster.region) continue;
+      if (cluster.derived && !app.showDerived) continue;
+      const rect = svg("rect", {
+        class: "cluster",
+        x: cluster.region.x, y: cluster.region.y,
+        width: cluster.region.width, height: cluster.region.height,
+        stroke: KIND_COLOR[cluster.kinds[0]] || "#888780",
+        "stroke-opacity": cluster.derived ? 0.35 : 1,
+      });
+      overlay.append(rect);
+    }
+  }
+
+  for (const annotation of app.annotations) {
+    if (annotation.stateId !== state.stateId) continue;
+    const isActive = annotation.id === app.activeId;
+    const stroke = isActive ? "#a32d2d" : "#993556";
+    const geometry = annotation.geometry;
+    if (annotation.kind === "point") {
+      overlay.append(svg("circle", { class: "anno-dot", cx: geometry.x, cy: geometry.y, r: 5, fill: stroke }));
+    } else if (annotation.kind === "arrow") {
+      overlay.append(svg("line", {
+        class: "anno", x1: geometry.x1, y1: geometry.y1, x2: geometry.x2, y2: geometry.y2,
+        stroke, "marker-end": "url(#head)",
+      }));
+    } else if (annotation.kind === "redact") {
+      overlay.append(svg("rect", {
+        class: "anno-redact", x: geometry.x, y: geometry.y,
+        width: geometry.width, height: geometry.height,
+      }));
+    } else {
+      overlay.append(svg("rect", {
+        class: "anno", x: geometry.x, y: geometry.y,
+        width: geometry.width, height: geometry.height, stroke,
+      }));
+    }
+    const labelWidth = 22 + String(annotation.id).length * 7;
+    overlay.append(svg("rect", {
+      class: "anno-label-bg", x: geometry.x, y: Math.max(0, geometry.y - 16),
+      width: labelWidth, height: 15, rx: 3, fill: stroke,
+    }));
+    const label = svg("text", {
+      class: "anno-label", x: geometry.x + 5, y: Math.max(11, geometry.y - 5),
+    });
+    label.textContent = annotation.id;
+    overlay.append(label);
+  }
+
+  const defs = svg("defs");
+  const marker = svg("marker", {
+    id: "head", viewBox: "0 0 10 10", refX: 8, refY: 5,
+    markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse",
+  });
+  marker.append(svg("path", { d: "M2 1L8 5L2 9", fill: "none", stroke: "#993556", "stroke-width": 1.5 }));
+  defs.append(marker);
+  overlay.prepend(defs);
+
+  for (const element of state.after.elements) {
+    const selected = app.selection.includes(element.key);
+    if (!selected && element.key !== app.hoverKey) continue;
+    overlay.append(svg("rect", {
+      class: selected ? "sel" : "hit",
+      x: element.rect.x, y: element.rect.y,
+      width: element.rect.width, height: element.rect.height,
+    }));
+  }
+
+  if (app.selection.length === 1 && app.tool === "resize") {
+    const element = state.after.elements.find((item) => item.key === app.selection[0]);
+    if (element) {
+      const r = element.rect;
+      const points = {
+        nw: [r.x, r.y], n: [r.x + r.width / 2, r.y], ne: [r.x + r.width, r.y],
+        e: [r.x + r.width, r.y + r.height / 2], se: [r.x + r.width, r.y + r.height],
+        s: [r.x + r.width / 2, r.y + r.height], sw: [r.x, r.y + r.height], w: [r.x, r.y + r.height / 2],
+      };
+      for (const name of HANDLES) {
+        const [cx, cy] = points[name];
+        overlay.append(svg("rect", {
+          class: `handle ${name}`, x: cx - 4, y: cy - 4, width: 8, height: 8,
+          "data-handle": name, rx: 1.5,
+        }));
+      }
+    }
+  }
+
+  if (app.band) {
+    overlay.append(svg("rect", {
+      class: "band", x: app.band.x, y: app.band.y,
+      width: app.band.width, height: app.band.height,
+    }));
+  }
+  if (app.drag && app.drag.preview) {
+    const r = app.drag.preview;
+    overlay.append(svg("rect", { class: "ghost", x: r.x, y: r.y, width: r.width, height: r.height }));
+  }
+  if (app.draw && app.draw.preview) {
+    const r = app.draw.preview;
+    overlay.append(svg("rect", { class: "band", x: r.x, y: r.y, width: r.width, height: r.height }));
+  }
+}
+
+/* ----------------------------------------------------------- interactions */
+
+function bindPane(pane, overlay, state, scale) {
+  const toLocal = (event) => {
+    const box = pane.getBoundingClientRect();
+    return { x: (event.clientX - box.left) / scale, y: (event.clientY - box.top) / scale };
+  };
+
+  const handleHit = (event) => {
+    const target = event.target;
+    if (target && target.getAttribute && target.getAttribute("data-handle")) {
+      return target.getAttribute("data-handle");
+    }
+    return null;
+  };
+
+  pane.addEventListener("pointerdown", (event) => {
+    if (event.target === $("#canvasRow") || event.button !== 0) return;
+    const point = toLocal(event);
+    const handle = handleHit(event);
+    const element = elementAt(state, point.x, point.y);
+
+    if (handle && app.selection.length === 1) {
+      const current = state.after.elements.find((item) => item.key === app.selection[0]);
+      app.drag = { mode: "resize", handle, key: current.key, origin: { ...current.rect }, start: point, preview: { ...current.rect } };
+      pane.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    if (app.tool === "move" && element) {
+      app.drag = { mode: "move", key: element.key, origin: { ...element.rect }, start: point, preview: { ...element.rect } };
+      pane.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    if (app.tool === "select") {
+      app.band = { x: point.x, y: point.y, width: 0, height: 0, origin: point };
+      pane.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    if (app.tool === "inspect" && element) {
+      app.selection = [element.key];
+      render();
+      return;
+    }
+
+    if (app.tool === "inspect" && !element) {
+      app.selection = [];
+      render();
+      return;
+    }
+
+    if (app.kind === "point") {
+      addAnnotation(state, { kind: "point", geometry: { x: round(point.x), y: round(point.y) }, target: element ? targetOf(element) : null });
+      return;
+    }
+    app.draw = { start: point, preview: null };
+    pane.setPointerCapture(event.pointerId);
+  });
+
+  pane.addEventListener("pointermove", (event) => {
+    const point = toLocal(event);
+
+    if (app.drag) {
+      const dx = point.x - app.drag.start.x;
+      const dy = point.y - app.drag.start.y;
+      const origin = app.drag.origin;
+      if (app.drag.mode === "move") {
+        app.drag.preview = { ...origin, x: origin.x + dx, y: origin.y + dy };
+      } else {
+        const h = app.drag.handle;
+        let { x, y, width, height } = origin;
+        if (h.includes("e")) width = Math.max(4, origin.width + dx);
+        if (h.includes("s")) height = Math.max(4, origin.height + dy);
+        if (h.includes("w")) { const nx = origin.x + dx; width = Math.max(4, origin.width - dx); x = nx; }
+        if (h.includes("n")) { const ny = origin.y + dy; height = Math.max(4, origin.height - dy); y = ny; }
+        app.drag.preview = { x, y, width, height };
+      }
+      paintOverlay(overlay, state, scale);
+      return;
+    }
+
+    if (app.band) {
+      app.band = {
+        x: Math.min(app.band.origin.x, point.x),
+        y: Math.min(app.band.origin.y, point.y),
+        width: Math.abs(point.x - app.band.origin.x),
+        height: Math.abs(point.y - app.band.origin.y),
+        origin: app.band.origin,
+      };
+      paintOverlay(overlay, state, scale);
+      return;
+    }
+
+    if (app.draw) {
+      app.draw.preview = {
+        x: Math.min(app.draw.start.x, point.x),
+        y: Math.min(app.draw.start.y, point.y),
+        width: Math.abs(point.x - app.draw.start.x),
+        height: Math.abs(point.y - app.draw.start.y),
+      };
+      paintOverlay(overlay, state, scale);
+      return;
+    }
+
+    if (app.tool === "inspect" || app.tool === "move" || app.tool === "resize") {
+      const element = elementAt(state, point.x, point.y);
+      const key = element ? element.key : null;
+      if (key !== app.hoverKey) {
+        app.hoverKey = key;
+        paintOverlay(overlay, state, scale);
+      }
+    }
+  });
+
+  pane.addEventListener("pointerup", (event) => {
+    const point = toLocal(event);
+
+    if (app.drag) {
+      const preview = app.drag.preview;
+      const origin = app.drag.origin;
+      const delta = {
+        x: round(preview.x - origin.x),
+        y: round(preview.y - origin.y),
+        width: round(preview.width - origin.width),
+        height: round(preview.height - origin.height),
+      };
+      const element = state.after.elements.find((item) => item.key === app.drag.key);
+      const moved = delta.x !== 0 || delta.y !== 0 || delta.width !== 0 || delta.height !== 0;
+      if (moved && element) {
+        const mode = app.drag.mode;
+        addAnnotation(state, {
+          kind: "element",
+          geometry: { x: round(preview.x), y: round(preview.y), width: round(preview.width), height: round(preview.height) },
+          target: targetOf(element),
+          manipulation: {
+            mode,
+            before: { x: origin.x, y: origin.y, width: origin.width, height: origin.height },
+            after: { x: round(preview.x), y: round(preview.y), width: round(preview.width), height: round(preview.height) },
+            delta,
+          },
+          presetOperations: ["layout"],
+          presetExpected:
+            mode === "move"
+              ? `将该元素${delta.x ? `向右移动 ${delta.x}px` : ""}${delta.x < 0 ? `向左移动 ${-delta.x}px` : ""}${delta.y ? `${delta.y > 0 ? "向下" : "向上"}移动 ${Math.abs(delta.y)}px` : ""}`.replace(/^将/, "将")
+              : `将该元素尺寸调整为 ${round(preview.width)}×${round(preview.height)}px（当前 ${origin.width}×${origin.height}）`,
+        });
+      }
+      app.drag = null;
+      render();
+      return;
+    }
+
+    if (app.band) {
+      const band = app.band;
+      app.band = null;
+      if (band.width > 4 && band.height > 4) {
+        app.selection = elementsIn(state, band).map((item) => item.key);
+        toast(`选中 ${app.selection.length} 个元素`);
+      }
+      render();
+      return;
+    }
+
+    if (app.draw) {
+      const rect = app.draw.preview;
+      const start = app.draw.start;
+      app.draw = null;
+      if (!rect) return;
+      if (app.kind === "arrow") {
+        addAnnotation(state, { kind: "arrow", geometry: { x1: round(start.x), y1: round(start.y), x2: round(point.x), y2: round(point.y) } });
+      } else if (rect.width > 4 && rect.height > 4) {
+        const element = elementAt(state, rect.x + rect.width / 2, rect.y + rect.height / 2);
+        addAnnotation(state, {
+          kind: app.kind,
+          geometry: { x: round(rect.x), y: round(rect.y), width: round(rect.width), height: round(rect.height) },
+          target: element ? targetOf(element) : null,
+        });
+      }
+      render();
+      return;
+    }
+  });
+
+  pane.addEventListener("pointerleave", () => {
+    if (app.hoverKey) {
+      app.hoverKey = null;
+      paintOverlay(overlay, state, scale);
+    }
+  });
+
+  const divider = pane.querySelector(".divider");
+  divider.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    const move = (moveEvent) => {
+      const box = pane.getBoundingClientRect();
+      app.split = Math.min(1, Math.max(0, (moveEvent.clientX - box.left) / box.width));
+      pane.style.setProperty("--split", `${app.split * 100}%`);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+/* -------------------------------------------------------------- annotations */
+
+let counter = 0;
+function nextId() {
+  counter += 1;
+  return `F${counter}`;
+}
+
+function addAnnotation(state, partial) {
+  const annotation = {
+    id: nextId(),
+    revisionId: app.data.toRevision,
+    stateId: state.stateId,
+    kind: partial.kind,
+    geometry: partial.geometry,
+    target: partial.target || null,
+    manipulation: partial.manipulation || null,
+    intent: {
+      operations: partial.presetOperations || [],
+      expected: partial.presetExpected || "",
+      scope: "element",
+      breakpoint: "all",
+      priority: "must",
+      invariants: "",
+    },
+  };
+  app.annotations.push(annotation);
+  app.activeId = annotation.id;
+  app.undo.push({ type: "add", id: annotation.id });
+  switchTab("anno");
+  return annotation;
+}
+
+function removeAnnotation(id) {
+  app.annotations = app.annotations.filter((item) => item.id !== id);
+  if (app.activeId === id) app.activeId = null;
+}
+
+function activeAnnotation() {
+  return app.annotations.find((item) => item.id === app.activeId) || null;
+}
+
+/* ----------------------------------------------------------------- sidebar */
+
+function switchTab(name) {
+  document.querySelectorAll(".tabs button").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.panel === name);
+  });
+}
+
+function renderSidebar() {
+  const state = currentState();
+  renderDiffPanel(state);
+  renderVerdictPanel();
+  renderAnnoPanel(state);
+}
+
+function clusterCard(cluster) {
+  const card = el("div", {
+    class: `card clickable${app.selection.includes(cluster.key) ? " active" : ""}`,
+    onclick: () => {
+      app.selection = [cluster.key];
+      app.tool = "inspect";
+      setSeg("#toolSeg", "tool", "inspect");
+      render();
+    },
+  });
+  const header = el("h4");
+  for (const kind of cluster.kinds) {
+    header.append(el("span", { class: `tag ${kind}`, text: KIND_LABEL[kind] || kind }));
+  }
+  header.append(el("span", {
+    text: cluster.anchor ? `${cluster.anchor.file}:${cluster.anchor.line}` : cluster.testId ? `#${cluster.testId}` : cluster.tag || "",
+  }));
+  card.append(header);
+
+  if (cluster.delta.style && Object.keys(cluster.delta.style).length) {
+    for (const [property, [from, to]] of Object.entries(cluster.delta.style)) {
+      const line = el("div", { class: "diff-line" });
+      line.append(el("span", { text: `${property}: ` }));
+      line.append(el("span", { class: "from", text: String(from ?? "none") }));
+      line.append(el("span", { text: " → " }));
+      line.append(el("span", { class: "to", text: String(to ?? "none") }));
+      card.append(line);
+    }
+  }
+  if (cluster.kinds.includes("resized") || cluster.kinds.includes("moved")) {
+    card.append(el("p", {
+      class: "kv",
+      text: `位移 ${cluster.delta.x >= 0 ? "+" : ""}${cluster.delta.x}, ${cluster.delta.y >= 0 ? "+" : ""}${cluster.delta.y} · 尺寸 ${cluster.delta.width >= 0 ? "+" : ""}${cluster.delta.width}×${cluster.delta.height >= 0 ? "+" : ""}${cluster.delta.height}`,
+    }));
+  }
+  if (cluster.derived) {
+    const reason = cluster.derivedReason === "sibling-shift"
+      ? "同级元素增删导致的连带位移"
+      : "父级元素改动导致的连带位移";
+    card.append(el("p", { class: "muted", text: `${reason}（来源 ${cluster.derivedFrom}）` }));
+  }
+  if (cluster.reuseCount != null) {
+    card.append(el("p", { class: "muted", text: `该组件在页面中复用 ${cluster.reuseCount} 处` }));
+  }
+  if (cluster.directlyAnnotated && cluster.directlyAnnotated.length) {
+    card.append(el("p", { class: "muted", text: `标注点名：${cluster.directlyAnnotated.join("、")}` }));
+  }
+  const indirect = (cluster.relatedAnnotations || []).filter(
+    (id) => !(cluster.directlyAnnotated || []).includes(id),
+  );
+  if (indirect.length) {
+    card.append(el("p", { class: "muted", text: `区域内涉及：${indirect.join("、")}` }));
+  }
+  return card;
+}
+
+function renderDiffPanel(state) {
+  const host = $("#panelDiff");
+  host.replaceChildren();
+  if (!state.clusters.length) {
+    host.append(el("div", { class: "empty", text: "未检测到结构性变更。" }));
+    host.append(el("p", {
+      class: "hint",
+      text: "可能原因：改动只发生在截图层面，或元素缺少稳定锚点导致无法对齐。",
+    }));
+    return;
+  }
+  const primary = state.clusters.filter((cluster) => !cluster.derived);
+  const derived = state.clusters.filter((cluster) => cluster.derived);
+  host.append(el("p", {
+    class: "hint",
+    text: `${primary.length} 处直接改动。点击任一条可定位到对应元素，并高亮引用它的标注。`,
+  }));
+  for (const cluster of primary) host.append(clusterCard(cluster));
+
+  if (derived.length) {
+    const toggle = el("button", {
+      class: `btn${app.showDerived ? " primary" : ""}`,
+      text: `${app.showDerived ? "隐藏" : "显示"} ${derived.length} 处连带位移`,
+      style: "width:100%;margin:4px 0 8px",
+      onclick: () => { app.showDerived = !app.showDerived; render(); },
+    });
+    host.append(toggle);
+    host.append(el("p", {
+      class: "hint",
+      text: "连带位移是父级改动或同级增删的后果，通常不需要单独处理。",
+    }));
+    if (app.showDerived) for (const cluster of derived) host.append(clusterCard(cluster));
+  }
+}
+
+function renderVerdictPanel() {
+  const host = $("#panelVerdict");
+  host.replaceChildren();
+  const annotations = app.data.annotations || [];
+  const verdicts = app.data.verdicts || [];
+  if (!annotations.length) {
+    host.append(el("div", { class: "empty", text: "本会话没有上一轮的标注。" }));
+    return;
+  }
+  host.append(el("p", { class: "hint", text: "确认或改判 agent 的修改结果。改判会进入下一轮意见。" }));
+  for (const annotation of annotations) {
+    const proposed = verdicts.find((item) => item.annotationId === annotation.id) || {};
+    const decided = app.verdicts[annotation.id];
+    const card = el("div", { class: "card" });
+    const header = el("h4");
+    header.append(el("span", { text: annotation.id }));
+    header.append(el("span", {
+      class: `tag ${decided ? decided.status : proposed.status || "unverified"}`,
+      text: statusLabel(decided ? decided.status : proposed.status),
+    }));
+    card.append(header);
+    card.append(el("p", { text: annotation.intent?.expected || "（无期望描述）" }));
+    for (const line of proposed.evidence || []) {
+      card.append(el("p", { class: "kv", text: `证据：${line}` }));
+    }
+    if (proposed.note) card.append(el("p", { class: "muted", text: proposed.note }));
+
+    const row = el("div", { class: "row", style: "margin-top:7px" });
+    for (const status of ["satisfied", "partial", "violated", "unverified"]) {
+      const active = decided ? decided.status === status : false;
+      row.append(el("button", {
+        class: `btn${active ? " primary" : ""}`,
+        text: statusLabel(status),
+        onclick: () => {
+          app.verdicts[annotation.id] = {
+            status,
+            confidence: "high",
+            clusters: proposed.clusters || [],
+            evidence: proposed.evidence || [],
+            note: decided?.note || "",
+            source: "review-ui",
+          };
+          renderVerdictPanel();
+        },
+      }));
+    }
+    card.append(row);
+
+    const note = el("input", {
+      type: "text",
+      placeholder: "备注（改判理由，会写进下一轮意见）",
+      value: decided?.note || "",
+      oninput: (event) => {
+        app.verdicts[annotation.id] = {
+          status: decided?.status || proposed.status || "unverified",
+          confidence: "high",
+          clusters: proposed.clusters || [],
+          evidence: proposed.evidence || [],
+          note: event.target.value,
+          source: "review-ui",
+        };
+      },
+    });
+    note.style.marginTop = "7px";
+    note.style.width = "100%";
+    card.append(note);
+    host.append(card);
+  }
+}
+
+function statusLabel(status) {
+  return { satisfied: "已达成", partial: "部分达成", violated: "未达成", unverified: "未验证" }[status] || "未验证";
+}
+
+function renderAnnoPanel(state) {
+  const host = $("#editorHost");
+  host.replaceChildren();
+  const annotation = activeAnnotation();
+  const selected = state.after.elements.filter((item) => app.selection.includes(item.key));
+
+  if (selected.length && !annotation) {
+    const card = el("div", { class: "card" });
+    card.append(el("h4", { text: `已选 ${selected.length} 个元素` }));
+    for (const element of selected.slice(0, 6)) {
+      card.append(el("p", {
+        class: "kv",
+        text: element.anchor ? `${element.anchor.file}:${element.anchor.line}` : element.selector || element.key,
+      }));
+    }
+    if (selected.length > 6) card.append(el("p", { class: "muted", text: `…等 ${selected.length} 个` }));
+    const batch = el("button", { class: "btn primary", text: "批量标注这些元素", style: "margin-top:7px" });
+    batch.addEventListener("click", () => {
+      const first = selected[0];
+      addAnnotation(state, {
+        kind: "element",
+        geometry: { ...first.rect },
+        target: targetOf(first),
+        presetOperations: ["style"],
+      });
+      const created = activeAnnotation();
+      created.batch = selected.map((item) => item.key);
+      created.intent.scope = "repeated";
+      render();
+    });
+    card.append(batch);
+    host.append(card);
+  }
+
+  if (annotation) host.append(editorFor(annotation));
+
+  const list = $("#annoList");
+  list.replaceChildren();
+  const mine = app.annotations.filter((item) => item.stateId === state.stateId);
+  if (!mine.length) {
+    list.append(el("div", { class: "empty", text: "还没有新标注。用「拖动」「缩放」或「框选」产生意见。" }));
+    return;
+  }
+  for (const item of mine) {
+    const card = el("div", {
+      class: `card clickable${item.id === app.activeId ? " active" : ""}`,
+      onclick: () => { app.activeId = item.id; render(); },
+    });
+    const header = el("h4");
+    header.append(el("span", { text: item.id }));
+    header.append(el("span", { class: "tag", text: (item.intent.operations || []).map((op) => OPERATION_LABELS[op] || op).join("、") || "未分类" }));
+    if (item.manipulation) {
+      header.append(el("span", { class: "tag moved", text: item.manipulation.mode === "move" ? "拖动" : "缩放" }));
+    }
+    card.append(header);
+    card.append(el("p", { text: item.intent.expected || "（待填写期望结果）" }));
+    if (item.manipulation) {
+      const d = item.manipulation.delta;
+      card.append(el("p", { class: "kv", text: `Δx ${d.x} · Δy ${d.y} · Δw ${d.width} · Δh ${d.height}` }));
+    }
+    const remove = el("button", { class: "btn", text: "删除", style: "margin-top:7px" });
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeAnnotation(item.id);
+      render();
+    });
+    card.append(remove);
+    list.append(card);
+  }
+}
+
+function editorFor(annotation) {
+  const card = el("div", { class: "card active" });
+  card.append(el("h4", { text: `编辑 ${annotation.id}` }));
+
+  const opsField = el("div", { class: "field" });
+  opsField.append(el("label", { text: "修改类型（多选）" }));
+  const ops = el("div", { class: "ops" });
+  for (const [value, label] of Object.entries(OPERATION_LABELS)) {
+    const id = `op-${annotation.id}-${value}`;
+    const input = el("input", { type: "checkbox", id });
+    input.checked = (annotation.intent.operations || []).includes(value);
+    input.addEventListener("change", () => {
+      const set = new Set(annotation.intent.operations || []);
+      if (input.checked) set.add(value); else set.delete(value);
+      annotation.intent.operations = [...set];
+      renderAnnoPanel(currentState());
+    });
+    ops.append(el("label", { for: id }, [input, label]));
+  }
+  opsField.append(ops);
+  card.append(opsField);
+
+  card.append(textField("期望结果（必填）", annotation.intent.expected, (value) => { annotation.intent.expected = value; }));
+
+  const row = el("div", { class: "row" });
+  row.append(selectField("作用范围", SCOPE_LABELS, annotation.intent.scope, (value) => { annotation.intent.scope = value; }));
+  row.append(selectField("响应式", BREAKPOINT_LABELS, annotation.intent.breakpoint, (value) => { annotation.intent.breakpoint = value; }));
+  row.append(selectField("优先级", { must: "必须", should: "建议" }, annotation.intent.priority, (value) => { annotation.intent.priority = value; }));
+  card.append(row);
+
+  card.append(textField("不可改动（可选）", annotation.intent.invariants, (value) => { annotation.intent.invariants = value; }));
+
+  if (annotation.target) {
+    const info = el("p", { class: "kv" });
+    info.textContent = annotation.target.anchor
+      ? `${annotation.target.anchor.file}:${annotation.target.anchor.line}`
+      : annotation.target.selector || "";
+    card.append(info);
+    if (annotation.target.reuseCount != null) {
+      card.append(el("p", { class: "muted", text: `复用 ${annotation.target.reuseCount} 处` }));
+    }
+  }
+  return card;
+}
+
+function textField(label, value, onChange) {
+  const field = el("div", { class: "field" });
+  field.append(el("label", { text: label }));
+  const input = el("textarea");
+  input.value = value || "";
+  input.addEventListener("input", () => onChange(input.value));
+  field.append(input);
+  return field;
+}
+
+function selectField(label, options, value, onChange) {
+  const field = el("div", { class: "field" });
+  field.append(el("label", { text: label }));
+  const select = el("select");
+  for (const [key, text] of Object.entries(options)) {
+    const option = el("option", { value: key, text });
+    if (key === value) option.selected = true;
+    select.append(option);
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  field.append(select);
+  return field;
+}
+
+/* ------------------------------------------------------------------ export */
+
+function buildExport() {
+  return {
+    schemaVersion: "1.2",
+    roundId: app.data.roundId,
+    sessionId: app.data.sessionId,
+    fromRevision: app.data.fromRevision,
+    toRevision: app.data.toRevision,
+    closedAt: new Date().toISOString(),
+    source: "review-ui",
+    annotations: app.annotations,
+    verdicts: Object.entries(app.verdicts).map(([annotationId, value]) => ({ annotationId, ...value })),
+  };
+}
+
+async function save() {
+  const payload = buildExport();
+  const problems = payload.annotations.filter((item) => !item.intent.expected.trim());
+  if (problems.length) {
+    toast(`${problems.map((item) => item.id).join("、")} 还没填期望结果`);
+    switchTab("anno");
+    app.activeId = problems[0].id;
+    render();
+    return;
+  }
+  try {
+    const response = await fetch("save", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (response.ok) {
+      toast("已保存，回到对话继续");
+      return;
+    }
+    throw new Error(String(response.status));
+  } catch {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "review-annotations.json";
+    link.click();
+    URL.revokeObjectURL(link.href);
+    toast("已下载 review-annotations.json");
+  }
+}
+
+/* ------------------------------------------------------------------ chrome */
+
+function setSeg(selector, attribute, value) {
+  document.querySelectorAll(`${selector} button`).forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset[attribute] === value));
+  });
+}
+
+function bindChrome() {
+  document.querySelectorAll("#modeSeg button").forEach((button) => {
+    button.addEventListener("click", () => {
+      app.mode = button.dataset.mode;
+      setSeg("#modeSeg", "mode", app.mode);
+      clearInterval(app.blinkTimer);
+      app.blinkTimer = null;
+      render();
+      if (app.mode === "blink") {
+        app.blinkTimer = setInterval(() => {
+          const pane = document.querySelector(".pane");
+          if (!pane) return;
+          app.blinkOn = !app.blinkOn;
+          pane.classList.toggle("show-before", app.blinkOn);
+        }, 650);
+      }
+    });
+  });
+  document.querySelectorAll("#zoomSeg button").forEach((button) => {
+    button.addEventListener("click", () => {
+      app.zoom = button.dataset.zoom;
+      setSeg("#zoomSeg", "zoom", app.zoom);
+      render();
+    });
+  });
+  document.querySelectorAll("#toolSeg button").forEach((button) => {
+    button.addEventListener("click", () => {
+      app.tool = button.dataset.tool;
+      setSeg("#toolSeg", "tool", app.tool);
+      render();
+    });
+  });
+  document.querySelectorAll("#kindSeg button").forEach((button) => {
+    button.addEventListener("click", () => {
+      app.kind = button.dataset.kind;
+      app.tool = "inspect";
+      setSeg("#kindSeg", "kind", app.kind);
+      setSeg("#toolSeg", "tool", "inspect");
+      render();
+    });
+  });
+  document.querySelectorAll(".tabs button").forEach((button) => {
+    button.addEventListener("click", () => switchTab(button.dataset.tab));
+  });
+  $("#toggleClusters").addEventListener("click", () => {
+    app.showClusters = !app.showClusters;
+    $("#toggleClusters").classList.toggle("primary", app.showClusters);
+    render();
+  });
+  $("#exportBtn").addEventListener("click", save);
+  $("#undoBtn").addEventListener("click", () => {
+    const last = app.undo.pop();
+    if (!last) return toast("没有可撤销的操作");
+    if (last.type === "add") removeAnnotation(last.id);
+    render();
+  });
+  $("#clearSelBtn").addEventListener("click", () => {
+    app.selection = [];
+    app.activeId = null;
+    render();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.target.matches("input, textarea, select")) return;
+    if (event.key === "Escape") { app.selection = []; app.activeId = null; render(); }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (app.activeId) { removeAnnotation(app.activeId); render(); }
+    }
+    const modes = { 1: "side", 2: "slider", 3: "blink", 4: "heatmap" };
+    if (modes[event.key]) {
+      app.mode = modes[event.key];
+      setSeg("#modeSeg", "mode", app.mode);
+      render();
+    }
+  });
+  window.addEventListener("resize", () => { if (app.zoom === "fit") render(); });
+}
+
+/* -------------------------------------------------------------------- boot */
+
+(async function main() {
+  bindChrome();
+  try {
+    app.data = await load();
+  } catch (error) {
+    $("#meta").textContent = `无法加载 review.json：${error.message}`;
+    $("#viewport").append(el("div", { class: "empty", text: "把 review.html 和 review.json 放在同一目录，或通过 review-session.mjs --serve 打开。" }));
+    return;
+  }
+  const prior = app.data.annotations || [];
+  for (const annotation of prior) {
+    const match = /^F(\d+)$/.exec(annotation.id);
+    if (match) counter = Math.max(counter, Number(match[1]));
+  }
+  app.stateId = app.data.states[0].stateId;
+  $("#toggleClusters").classList.add("primary");
+  render();
+  window.__SYMBUI_REVIEW_READY__ = true;
+})();
+</script>
+</body>
+</html>

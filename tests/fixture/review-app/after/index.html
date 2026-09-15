@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>产品列表 · 修改后</title>
+<style>
+  :root {
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --radius-card: 4px;
+    --radius-btn: 999px;
+    --brand: #0f6e56;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    background: #f6f6f4; color: #1c1c1a;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: #5f5e5a; margin: 0 0 20px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .card {
+    background: #fff; border: 1px solid rgba(0,0,0,.12);
+    border-radius: var(--radius-card); padding: var(--space-3);
+    display: flex; flex-direction: column; gap: var(--space-3);
+  }
+  .card h2 { font-size: 15px; font-weight: 500; margin: 0; }
+  .card p { margin: 0; color: #5f5e5a; font-size: 13px; }
+  .price { font-size: 22px; font-weight: 500; }
+  .actions { display: flex; gap: var(--space-2); }
+  button {
+    font: inherit; border-radius: var(--radius-btn); padding: 8px 16px;
+    border: 1px solid rgba(0,0,0,.14); background: #fff; cursor: pointer;
+  }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .tag {
+    display: inline-block; font-size: 12px; padding: 2px 8px;
+    border-radius: 999px; background: #eaf3de; color: #3b6d11;
+  }
+</style>
+</head>
+<body>
+  <h1 data-ui-source="src/pages/Products.tsx:18" data-component="Products">在售产品</h1>
+  <p class="sub" data-ui-source="src/pages/Products.tsx:19">共 3 个 SKU</p>
+
+  <div class="grid" data-ui-source="src/pages/Products.tsx:21" data-component="ProductGrid">
+    <article class="card" data-testid="card-aurora" data-ui-source="src/components/ProductCard.tsx:12" data-component="ProductCard">
+      <span class="tag" data-ui-source="src/components/ProductCard.tsx:13">现货</span>
+      <h2 data-ui-source="src/components/ProductCard.tsx:14">极光耳机</h2>
+      <p data-ui-source="src/components/ProductCard.tsx:15">主动降噪，续航 40 小时</p>
+      <div class="price" data-ui-source="src/components/ProductCard.tsx:16">¥1,299</div>
+      <div class="actions" data-ui-source="src/components/ProductCard.tsx:17">
+        <button class="primary" data-ui-source="src/components/ProductCard.tsx:18">加入购物车</button>
+        <button data-ui-source="src/components/ProductCard.tsx:19">详情</button>
+      </div>
+    </article>
+
+    <article class="card" data-testid="card-verde" data-ui-source="src/components/ProductCard.tsx:12" data-component="ProductCard">
+      <span class="tag" data-ui-source="src/components/ProductCard.tsx:13">预售</span>
+      <h2 data-ui-source="src/components/ProductCard.tsx:14">青柏键盘</h2>
+      <p data-ui-source="src/components/ProductCard.tsx:15">静音轴体，三模连接</p>
+      <div class="price" data-ui-source="src/components/ProductCard.tsx:16">¥899</div>
+      <div class="actions" data-ui-source="src/components/ProductCard.tsx:17">
+        <button class="primary" data-ui-source="src/components/ProductCard.tsx:18">加入购物车</button>
+        <button data-ui-source="src/components/ProductCard.tsx:19">详情</button>
+      </div>
+    </article>
+
+    <article class="card" data-testid="card-slate" data-ui-source="src/components/ProductCard.tsx:12" data-component="ProductCard">
+      <span class="tag" data-ui-source="src/components/ProductCard.tsx:13">新品</span>
+      <h2 data-ui-source="src/components/ProductCard.tsx:14">砚石鼠标</h2>
+      <p data-ui-source="src/components/ProductCard.tsx:15">静音微动，八键可编程</p>
+      <div class="price" data-ui-source="src/components/ProductCard.tsx:16">¥359</div>
+      <div class="actions" data-ui-source="src/components/ProductCard.tsx:17">
+        <button class="primary" data-ui-source="src/components/ProductCard.tsx:18">加入购物车</button>
+        <button data-ui-source="src/components/ProductCard.tsx:19">详情</button>
+      </div>
+    </article>
+  </div>
+</body>
+</html>

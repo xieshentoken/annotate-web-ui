@@ -1,6 +1,6 @@
 ---
 name: annotate-web-ui
-description: Open a local development or pure static web page in an isolated browser, preserve its live interactions, collect DOM-aware visual annotations in a frozen viewport, and generate an evidence-linked UI change specification and implementation prompt. Use when a user wants to point at, box, redact, or describe exact changes on a local web application instead of relying on ambiguous natural-language references.
+description: Open a local development or pure static web page in an isolated browser, preserve its live interactions, collect DOM-aware visual annotations in a frozen viewport, generate an evidence-linked UI change specification and implementation prompt, then recapture the page after the edit, diff it against the previous revision, and present a before/after review where the user confirms or overrides each verdict and annotates the result directly. Optionally wires development-only build plugins that stamp every element with its own source file and line, which is what makes the diff able to tell a real change apart from a cascade of shifted siblings. Use when a user wants to point at, box, redact, drag, or describe exact changes on a local web application instead of relying on ambiguous natural-language references, or wants to verify that a change actually landed.
 ---
 
 # Annotate Web UI
@@ -21,10 +21,39 @@ from source-code modification.
 - Do not install dependencies or modify the target application to inject the
   toolbar.
 - Write only the annotation session bundle under the selected output root.
+- Recapture reads the page; it never edits the target application.
+- Serve the review preview on loopback only, and never upload a screenshot.
+- Never write a credential into a session artifact. In `byok` mode the key comes
+  from the environment or from a `0600` file outside the repository.
+- Do not resolve a conflict between two instructions on the same target. Report
+  it and let the user decide.
 - Stop after generating the change specification unless the user separately
   asks to implement the approved changes.
 
+The build-time anchor injectors under `plugins/` are the one exception to "do not
+modify the target application", and only because they are a source change the
+user makes deliberately and keeps: a development-only Babel and Vue transform
+that adds `data-ui-source` to the markup. Never install them silently. Offer
+them, explain that they change the build, and let the user decide.
+
 ## Workflow
+
+### 0. Offer source anchors before the first capture
+
+Ask whether the target application can run with the injectors from
+[references/build-anchors.md](references/build-anchors.md). Without them the
+probe falls back to framework internals, which report the component rather than
+the element and can vanish; with them every element carries its own file and
+line, and the revision diff can tell a real change apart from a cascade of
+shifted siblings.
+
+This is a change to the user's build configuration, so it is a question, not a
+default. If they decline, carry on — the session degrades to weaker evidence
+rather than failing. Be specific about what is lost: without them no candidate
+can reach `exact` confidence, so every change is reported as an unresolved
+target the coding agent has to confirm against the file itself. Both the first
+change request and each consolidated round report this under
+`Build-time anchors`.
 
 ### 1. Establish the target
 
@@ -110,8 +139,41 @@ Do not invent a component or file. Ask for clarification when:
 ### 5. Hand off only the approved request
 
 Present the change request before editing application code. After approval, use
-the implementation prompt as a scoped input and verify the changed page at the
-captured route and viewport.
+the implementation prompt as a scoped input.
+
+### 6. Close the loop after the edit
+
+Do not accept the coding agent's word that the change landed. Recapture and
+compare:
+
+```bash
+node scripts/review-session.mjs --session <session-dir> --serve
+```
+
+This captures the result revision, diffs it against the previous one, proposes a
+verdict per annotation, and serves the before/after preview on loopback. Tell
+the user the preview URL and let them work in it. The step ends when they press
+**保存复审结果**, or on `Ctrl-C`.
+
+In the preview the user compares the two revisions (side by side, wipe slider,
+blink, or pixel heatmap), then either confirms the proposed verdicts or
+overrides them, and annotates the result directly: box-select to batch, drag to
+move, resize from the handles. A drag is recorded as an exact `delta` in CSS
+pixels, which is far less ambiguous than prose.
+
+Then fold the round into the next request:
+
+```bash
+node scripts/consolidate-review.mjs --session <session-dir>
+```
+
+The result contains only the delta: annotations that were not satisfied, plus
+whatever the reviewer drew on the result. Satisfied ones are listed as closed
+and dropped. Repeat from step 5 until every verdict is `satisfied` and the round
+produced no new annotations, or until `review.maxRounds` is reached.
+
+Never consolidate a round that still has an unresolved conflict on the same
+target. Report it and let the user decide.
 
 ## Runtime behavior
 
@@ -132,9 +194,20 @@ the live page without dismissing an open menu or tooltip.
 
 ## References
 
+- Read [references/build-anchors.md](references/build-anchors.md) when wiring the
+  build-time anchor injectors, when anchors are missing from the inventory, or
+  when the user asks why an element has no source location.
+- Read [references/review-loop.md](references/review-loop.md) when changing the
+  round protocol, the diff rules, or the preview workflow.
+- Read [references/model-config.md](references/model-config.md) when changing
+  how verdicts are produced, or when the user asks about model configuration.
 - Read [references/annotation-schema.md](references/annotation-schema.md) when
   validating or extending the session format.
 - Read [references/target-resolution.md](references/target-resolution.md) when
   changing DOM evidence or source matching.
+- Read [references/source-resolution.md](references/source-resolution.md) when
+  changing how an annotation becomes a `file:line`, when candidates are missing
+  or land on the wrong line, when the project is localized and the annotated
+  text is not the source text, or when the resolver reports a degraded engine.
 - Read [references/prompt-contract.md](references/prompt-contract.md) when
   changing generated Markdown or handoff behavior.
