@@ -368,6 +368,7 @@
           <button data-tool="select" aria-pressed="false">框选</button>
           <button data-tool="move" aria-pressed="false">拖动</button>
           <button data-tool="resize" aria-pressed="false">缩放</button>
+          <button data-tool="annotate" aria-pressed="false">标注</button>
         </div>
         <div class="seg" id="kindSeg" role="group" aria-label="标注类型">
           <button data-kind="box" aria-pressed="true">方框</button>
@@ -467,6 +468,15 @@ const svg = (tag, attrs = {}) => {
   return node;
 };
 const round = (n) => Math.round(n);
+
+// Both panes must carry the computed size. An unsized pane falls back to its
+// image's intrinsic width, which pushes the annotatable pane past the canvas
+// area and puts its right-hand resize handles out of reach behind the sidebar.
+const withSize = (node, size) => {
+  node.style.width = `${size.width}px`;
+  node.style.height = `${size.height}px`;
+  return node;
+};
 const area = (r) => Math.max(0, r.width) * Math.max(0, r.height);
 
 function toast(message) {
@@ -635,14 +645,18 @@ function render() {
     row.append(
       el("div", { class: "pane-wrap" }, [
         el("div", { class: "pane-label", text: "修改前" }),
-        el("div", { class: "pane" }, [el("img", { src: state.before.image, alt: "修改前" })]),
+        withSize(
+          el("div", { class: "pane" }, [el("img", { src: state.before.image, alt: "修改前" })]),
+          size,
+        ),
       ]),
     );
   }
 
-  const pane = el("div", { class: `pane mode-${app.mode}${app.showClusters ? "" : " cluster-off"}` });
-  pane.style.width = `${size.width}px`;
-  pane.style.height = `${size.height}px`;
+  const pane = withSize(
+    el("div", { class: `pane mode-${app.mode}${app.showClusters ? "" : " cluster-off"}` }),
+    size,
+  );
   pane.style.setProperty("--split", `${app.split * 100}%`);
 
   const after = el("img", { class: "layer img-after", src: state.after.image, alt: "修改后" });
@@ -808,6 +822,24 @@ function bindPane(pane, overlay, state, scale) {
     const handle = handleHit(event);
     const element = elementAt(state, point.x, point.y);
 
+    // A kind is a drawing mode, so it is resolved first: a press draws instead
+    // of selecting, and a resize handle must not take the gesture away.
+    if (app.tool === "annotate") {
+      if (app.kind === "point") {
+        addAnnotation(state, {
+          kind: "point",
+          geometry: { x: round(point.x), y: round(point.y) },
+          target: element ? targetOf(element) : null,
+        });
+        // addAnnotation only records the annotation; without this the dot and
+        // the sidebar entry stay invisible until some other event renders.
+        render();
+        return;
+      }
+      app.draw = { start: point, preview: null };
+      pane.setPointerCapture(event.pointerId);
+      return;
+    }
     if (handle && app.selection.length === 1) {
       const current = state.after.elements.find((item) => item.key === app.selection[0]);
       app.drag = { mode: "resize", handle, key: current.key, origin: { ...current.rect }, start: point, preview: { ...current.rect } };
@@ -839,12 +871,6 @@ function bindPane(pane, overlay, state, scale) {
       return;
     }
 
-    if (app.kind === "point") {
-      addAnnotation(state, { kind: "point", geometry: { x: round(point.x), y: round(point.y) }, target: element ? targetOf(element) : null });
-      return;
-    }
-    app.draw = { start: point, preview: null };
-    pane.setPointerCapture(event.pointerId);
   });
 
   pane.addEventListener("pointermove", (event) => {
@@ -1452,9 +1478,12 @@ function bindChrome() {
   document.querySelectorAll("#kindSeg button").forEach((button) => {
     button.addEventListener("click", () => {
       app.kind = button.dataset.kind;
-      app.tool = "inspect";
+      // Picking a kind is picking a drawing mode, so the tool has to follow it.
+      // Leaving the tool on 查看 made every shape unreachable: the inspect
+      // branches below consume the press before a kind is ever consulted.
+      app.tool = "annotate";
       setSeg("#kindSeg", "kind", app.kind);
-      setSeg("#toolSeg", "tool", "inspect");
+      setSeg("#toolSeg", "tool", app.tool);
       render();
     });
   });
