@@ -91,6 +91,11 @@
     drawing: null,
     manipulating: null,
     panelDrag: null,
+    // Pinned: the panel stays fully open, exactly as it always has. Unpinned:
+    // it folds to its header as soon as the pointer goes back to the page, so
+    // the panel never covers the element being annotated.
+    pinned: true,
+    panelCollapseTimer: null,
     host: null,
     shadow: null,
     ui: {},
@@ -131,6 +136,109 @@
     if (!panel?.style.left) return;
     const rect = panel.getBoundingClientRect();
     setPanelPosition(rect.left, rect.top);
+  }
+
+  // The panel's auto-fold. Pinned, none of this fires: the panel stays exactly
+  // as open as it has always been. Unpinned, the panel folds down to its header
+  // the moment the pointer goes back to the page, so it cannot cover the element
+  // being annotated. Expanding is always an explicit click — the + button or the
+  // pin — never a hover: a hover rule that also repositions the panel can
+  // oscillate against its own layout change.
+  const PANEL_COLLAPSE_DELAY_MS = 420;
+
+  function panelFieldHasFocus() {
+    const active = app.shadow?.activeElement;
+    if (!active || !app.ui.panel?.contains(active)) return false;
+    return ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
+  }
+
+  // The browser's own hit-test state, not a flag we maintain from boundary
+  // events: a cached flag drifts whenever an event is swallowed (pointer
+  // capture during a panel drag, the panel hidden for a capture, the panel
+  // repositioned out from under a stationary pointer), and a drifted flag
+  // either disarms the fold for good or folds the panel out from under the hand.
+  function panelHoldsPointer() {
+    return Boolean(app.ui.panel?.matches(":hover"));
+  }
+
+  function panelShouldStayOpen() {
+    if (app.pinned) return true;
+    if (app.panelDrag) return true;
+    if (panelHoldsPointer()) return true;
+    // Typing outranks the pointer: folding mid-sentence would take the field and
+    // the caret with it.
+    return panelFieldHasFocus();
+  }
+
+  function cancelPanelCollapse() {
+    if (app.panelCollapseTimer == null) return;
+    clearTimeout(app.panelCollapseTimer);
+    app.panelCollapseTimer = null;
+  }
+
+  function expandPanel() {
+    cancelPanelCollapse();
+    if (!app.ui.panel) return;
+    app.ui.panel.classList.remove("collapsed");
+    requestAnimationFrame(clampCurrentPanel);
+  }
+
+  function collapsePanel() {
+    cancelPanelCollapse();
+    if (app.pinned || !app.ui.panel) return;
+    app.ui.panel.classList.add("collapsed");
+    requestAnimationFrame(clampCurrentPanel);
+  }
+
+  // Apps that need the user to type have to reopen the panel first: focus() is a
+  // no-op on a subtree inside the folded (display: none) body, so the caret would
+  // land on the page instead and the user would type into the page. This is a
+  // code-driven open on a state change, not the hover rule rejected above.
+  function focusPanelField(field) {
+    if (!field) return;
+    if (app.ui.panel?.classList.contains("collapsed")) expandPanel();
+    field.focus();
+  }
+
+  function schedulePanelCollapse(delay = PANEL_COLLAPSE_DELAY_MS) {
+    // First trigger wins. Re-arming on every page pointermove would turn this
+    // into "folds once the mouse stops", and the panel would keep sitting on top
+    // of the page for as long as the hand keeps moving.
+    if (app.panelCollapseTimer != null) return;
+    if (panelShouldStayOpen()) return;
+    app.panelCollapseTimer = setTimeout(() => {
+      app.panelCollapseTimer = null;
+      // Re-check: in the meantime the pointer may be back, or a field focused.
+      if (panelShouldStayOpen()) return;
+      collapsePanel();
+    }, delay);
+  }
+
+  // A pointer event counts as "on the page" only when the panel is not in its
+  // composed path — inside the shadow root, event.target is the host itself.
+  function isPagePointerEvent(event) {
+    return Boolean(app.ui.panel && !event.composedPath().includes(app.ui.panel));
+  }
+
+  function onPagePointerMove(event) {
+    if (app.pinned || !isPagePointerEvent(event)) return;
+    schedulePanelCollapse();
+  }
+
+  // A press on the page is the user leaving the panel, so it folds at once
+  // instead of after the grace period. `collapsePanel` is what enforces pinned,
+  // and the caret needs no help: a press elsewhere moves focus out of the field
+  // on its own, and the folded body would drop it anyway.
+  function onPagePointerDown(event) {
+    if (!isPagePointerEvent(event)) return;
+    collapsePanel();
+  }
+
+  // Page events arrive through the document rather than through a wrapper: the
+  // page stays the page, and the overlay never takes a listener the page needs.
+  function watchPageForPanelFocusLoss() {
+    document.addEventListener("pointermove", onPagePointerMove, true);
+    document.addEventListener("pointerdown", onPagePointerDown, true);
   }
 
   function startPanelDrag(event) {
@@ -933,7 +1041,7 @@
     const name = app.ui.groupName.value.trim().slice(0, 64);
     if (!name) {
       showToast("请先填写分组名称", "error");
-      app.ui.groupName.focus();
+      focusPanelField(app.ui.groupName);
       return;
     }
     const group = {
@@ -1153,7 +1261,7 @@
     renderAnnotations();
     renderAnnotationList();
     if (kind !== "redact") {
-      setTimeout(() => app.ui.expected.focus(), 0);
+      setTimeout(() => focusPanelField(app.ui.expected), 0);
     }
     return annotation;
   }
@@ -1747,7 +1855,7 @@
         missingOperations.id + " 请至少选择一项“想改什么”",
         "error",
       );
-      app.ui.operationButtons[0]?.focus();
+      focusPanelField(app.ui.operationButtons[0]);
       return;
     }
     // A raw delta is a measurement, not an instruction: without an expected
@@ -1766,7 +1874,7 @@
         `${bareManipulation.id} 只记录了${bareManipulation.manipulation.mode === "move" ? "位移量" : "尺寸变化"}：位移是测量值，不是指令。请写清改完之后应该是什么样`,
         "error",
       );
-      app.ui.expected.focus();
+      focusPanelField(app.ui.expected);
       return;
     }
     const incomplete = actionable.find(
@@ -1779,7 +1887,7 @@
       renderAnnotationList();
       renderAnnotations();
       showToast(`${incomplete.id} 还没有填写预期结果`, "error");
-      app.ui.expected.focus();
+      focusPanelField(app.ui.expected);
       return;
     }
 
@@ -2043,6 +2151,12 @@
       .panel.collapsed { width: 296px; }
       .panel.collapsed .panel-body,
       .panel.collapsed .panel-footer { display: none; }
+      /* Folded, the header is a status rail: the wordmark and the eyebrow are the
+         first things to go. Keeping them wraps the title into a second row and
+         nearly doubles the height of the one part of the panel that is meant to
+         be out of the way. The status pill stays — that is the useful readout. */
+      .panel.collapsed .title strong,
+      .panel.collapsed .title .eyebrow { display: none; }
       .panel-header {
         min-height: 58px;
         display: flex;
@@ -2458,6 +2572,23 @@
       }
       .density-toggle[aria-pressed="true"]::before { content: "密"; }
 
+      /* Pin toggle: pressed (aria-pressed="true") means the panel is pinned open,
+         which is the default. Unpinned, the panel folds to this header as soon
+         as the pointer goes back to the page. The glyph names the state in force
+         — 钉 pinned, 浮 floating — the way the density toggle names its density. */
+      .pin-toggle { font-size: 0; }
+      .pin-toggle::before {
+        content: "浮";
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.25;
+      }
+      .pin-toggle[aria-pressed="true"] {
+        border-color: var(--ink);
+        background: var(--saffron);
+      }
+      .pin-toggle[aria-pressed="true"]::before { content: "钉"; }
+
       /* Compact density — the default. It only tightens spacing and type; every
          control and section stays reachable. Expanded is the comfortable set above. */
       .panel.compact .panel-header {
@@ -2593,6 +2724,7 @@
           <strong>SymbUI</strong>
         </div>
         <span class="drag-hint" aria-hidden="true">⠿</span>
+        <button class="icon-button pin-toggle" type="button" title="钉扎：固定完整显示；取消钉扎后，鼠标一回到页面就自动收起" aria-pressed="true">钉扎</button>
         <button class="icon-button density-toggle" type="button" title="切换密度：紧凑／展开" aria-pressed="true">密度</button>
         <button class="icon-button collapse" type="button" title="折叠">—</button>
       </header>
@@ -2698,6 +2830,7 @@
       pickerHighlight,
       panel,
       panelHeader: panel.querySelector(".panel-header"),
+      pinToggle: panel.querySelector(".pin-toggle"),
       status: panel.querySelector(".status"),
       freeze: panel.querySelector(".freeze"),
       pick: panel.querySelector(".pick"),
@@ -2726,6 +2859,7 @@
     };
 
     panel.querySelector(".collapse").addEventListener("click", () => {
+      cancelPanelCollapse();
       panel.classList.toggle("collapsed");
       requestAnimationFrame(clampCurrentPanel);
     });
@@ -2738,6 +2872,20 @@
       densityToggle.setAttribute("aria-pressed", String(compact));
       requestAnimationFrame(clampCurrentPanel);
     });
+
+    app.ui.pinToggle.addEventListener("click", () => {
+      app.pinned = !app.pinned;
+      app.ui.pinToggle.setAttribute("aria-pressed", String(app.pinned));
+      // Pinning means "fully shown", so it opens the panel. Unpinning only arms
+      // the fold: the panel stays where it is until the pointer goes back to the
+      // page, so the switch never yanks it out from under the click.
+      if (app.pinned) expandPanel();
+      else schedulePanelCollapse();
+    });
+    // No hover listener: the fold reads :hover directly (panelHoldsPointer), so
+    // there is no cached pointer state to keep in sync, and a hover never opens
+    // the panel — see the note above PANEL_COLLAPSE_DELAY_MS.
+    watchPageForPanelFocusLoss();
     app.ui.panelHeader.addEventListener("pointerdown", startPanelDrag);
     app.ui.panelHeader.addEventListener("pointermove", movePanelDrag);
     app.ui.panelHeader.addEventListener("pointerup", endPanelDrag);
