@@ -252,6 +252,14 @@
   .state-row .state-select { flex: 1 1 auto; min-width: 0; }
   .delete-state { flex: 0 0 auto; white-space: nowrap; }
 
+  /* Armed by the first click, deleted by the second: an irreversible action
+     needs a visible first state, not just a different word on the button. */
+  .delete-state.armed {
+    background: var(--saffron);
+    border-color: var(--ink);
+    color: var(--ink);
+  }
+
   /* ----------------------------------------------------------------- buttons */
   .primary, .secondary, .danger, .tool {
     min-height: 30px;
@@ -1036,14 +1044,16 @@
 
   function fireText(key, entry) {
     if (entry.timer) { clearTimeout(entry.timer); entry.timer = 0; }
-    if (!entry.dirty) return;
+    if (!entry.dirty) return null;
     entry.dirty = false;
     entry.last = performance.now();
-    try { entry.trigger(entry); } catch (error) { /* a failed send must not eat keystrokes */ }
+    try { return entry.trigger(entry); } catch (error) { /* a failed send must not eat keystrokes */ return null; }
   }
 
   function flushPendingText() {
-    pendings.forEach(function (entry, key) { fireText(key, entry); });
+    var fired = [];
+    pendings.forEach(function (entry, key) { fired.push(fireText(key, entry)); });
+    return fired;
   }
   function settleText(el, key) {
     var entry = pendings.get(key);
@@ -1069,8 +1079,11 @@
   // Anything that is not a keystroke settles the text fields first, so e.g.
   // 建立分组 cannot be answered from a half-typed name.
   function sendNow(command) {
-    flushPendingText();
-    return push(command);
+    // The text fields settle first, and the command waits for those requests to
+    // be answered: sending both at once lets the relay run 建立分组 before the
+    // name it reads has been written, and the group is refused for a reason the
+    // user cannot see.
+    return Promise.all(flushPendingText()).then(function () { return push(command); });
   }
 
   function bindText(el, key, build) {
@@ -1390,7 +1403,30 @@
   els.deleteSelected.addEventListener("click", function () { sendNow({ command: "delete-selected" }); });
   els.groupCreate.addEventListener("click", function () { sendNow({ command: "group-create" }); });
   els.finish.addEventListener("click", function () { sendNow({ command: "finish" }); });
-  els.deleteState.addEventListener("click", function () { sendNow({ command: "delete-state" }); });
+  /* Deleting a frozen page cannot ask the page to confirm: that dialog would be
+     raised in the browser window, and a modal there blocks the very renderer the
+     panel is talking to — this window would simply stop responding. So the
+     button asks here, and the command goes out already confirmed. */
+  var deleteArmed = false;
+  var deleteDisarmTimer = 0;
+  function disarmDelete() {
+    deleteArmed = false;
+    clearTimeout(deleteDisarmTimer);
+    els.deleteState.classList.remove("armed");
+    els.deleteState.textContent = "删除冻结页";
+  }
+  els.deleteState.addEventListener("click", function () {
+    if (!deleteArmed) {
+      deleteArmed = true;
+      els.deleteState.classList.add("armed");
+      els.deleteState.textContent = "再点一次删除";
+      clearTimeout(deleteDisarmTimer);
+      deleteDisarmTimer = setTimeout(disarmDelete, 5000);
+      return;
+    }
+    disarmDelete();
+    sendNow({ command: "delete-state", confirmed: true });
+  });
   els.stateSelect.addEventListener("change", function () {
     sendNow({ command: "select-state", stateId: els.stateSelect.value });
   });

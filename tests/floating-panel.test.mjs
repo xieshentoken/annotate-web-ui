@@ -343,6 +343,13 @@ test("the relay answers only with the session token", async (t) => {
       );
       assert.match(await allowed.text(), /<html/i);
 
+      const nameless = await fetch(`http://127.0.0.1:${host.port}/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command: "freeze" }),
+      });
+      assert.equal(nameless.status, 403, "the route that mutates needs the token");
+
       const command = await fetch(
         `http://127.0.0.1:${host.port}/command?token=${host.token}`,
         {
@@ -396,9 +403,15 @@ test("the floating panel is a second view that drives the page", async (t) => {
         "the panel opens on the state the page is in",
       );
 
-      // Freeze from the panel; the overlay in the page has to follow.
+      // Freeze from the panel; the overlay in the page has to follow, and the
+      // panel's own status has to follow with it.
       await clickAt(panel, await centerIn(panel, "#freeze"));
       await waitFor(client, `window.__SYMBUI_PANEL_STATE__().mode === "frozen"`);
+      await waitFor(
+        panel,
+        `document.getElementById("status").textContent === "已冻结"`,
+        "the panel follows the page's mode",
+      );
 
       // Draw in the page; the panel has to catch up on its own.
       await client.send("Input.dispatchMouseEvent", {
@@ -466,7 +479,11 @@ test("the floating panel is a second view that drives the page", async (t) => {
         client,
         `document.querySelector("#__symbui-host").shadowRoot.querySelector(".toast").textContent`,
       );
-      assert.ok(refusal.trim().length > 0, "the page must refuse the empty finish");
+      assert.match(
+        refusal,
+        /请至少选择|还没有填写预期结果/,
+        "the page must refuse the empty finish with its own gate message",
+      );
       await waitFor(
         panel,
         `document.getElementById("toast").textContent === ${JSON.stringify(refusal)}`,
@@ -575,5 +592,59 @@ test("the native window loads the panel page", async (t) => {
       await host.close();
     }
   });
+  if (outcome.skipped) return t.skip(outcome.skipped);
+});
+
+test("deleting a frozen page from the panel takes two clicks", async (t) => {
+  const outcome = await withBrowser(
+    async ({ client }) => {
+      const host = await startPanelHost({ client });
+      const panelBrowser = await launchPanelBrowser(host.url);
+      const panel = panelBrowser.client;
+      try {
+        await waitFor(
+          panel,
+          `document.querySelectorAll("#tool-grid button[data-tool]").length === 6`,
+        );
+        await clickAt(panel, await centerIn(panel, "#freeze"));
+        await waitFor(client, `window.__SYMBUI_PANEL_STATE__().states.length === 1`);
+        // The panel is up to a poll behind the page: a disabled button swallows
+        // the click, so wait for the button, not only for the page's state.
+        await waitFor(
+          panel,
+          `document.getElementById("delete-state").disabled === false`,
+        );
+
+        // The first click only arms: the dialog that used to ask lives in the
+        // page, and a modal there blocks the renderer this panel is talking to,
+        // so the question has to be asked on this side.
+        await clickAt(panel, await centerIn(panel, "#delete-state"));
+        assert.equal(
+          await evaluate(client, `window.__SYMBUI_PANEL_STATE__().states.length`),
+          1,
+          "one click must not delete a frozen page",
+        );
+        assert.equal(
+          await evaluate(
+            panel,
+            `document.getElementById("delete-state").textContent.trim()`,
+          ),
+          "再点一次删除",
+          "the armed state has to say so",
+        );
+
+        await clickAt(panel, await centerIn(panel, "#delete-state"));
+        await waitFor(client, `window.__SYMBUI_PANEL_STATE__().states.length === 0`);
+        await waitFor(
+          panel,
+          `document.getElementById("delete-state").disabled === true`,
+          "no frozen page is left to delete",
+        );
+      } finally {
+        await panelBrowser.close();
+        await host.close();
+      }
+    },
+  );
   if (outcome.skipped) return t.skip(outcome.skipped);
 });

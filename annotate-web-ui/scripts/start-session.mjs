@@ -613,23 +613,41 @@ async function main() {
       return;
     }
 
+    // Bounded: this runs before `await finished`, so a compiler that never
+    // returns would keep the session (and its browser) alive after the work is
+    // already done and the artifacts are already written.
     const build = await new Promise((resolve) => {
       const child = spawn(process.execPath, [PANEL_BUILD_PATH], {
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";
       let stderr = "";
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Already gone.
+        }
+        finish({ ok: false, error: "the build did not finish within 120s" });
+      }, 120000);
       child.stdout.on("data", (chunk) => {
         stdout += chunk.toString("utf8");
       });
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString("utf8");
       });
-      child.once("error", (error) => resolve({ ok: false, error: error.message }));
+      child.once("error", (error) => finish({ ok: false, error: error.message }));
       child.once("exit", (code) => {
         const lines = stdout.trim().split("\n").filter(Boolean);
         const binary = lines.at(-1) || null;
-        resolve(
+        finish(
           code === 0 && binary
             ? { ok: true, binary }
             : {

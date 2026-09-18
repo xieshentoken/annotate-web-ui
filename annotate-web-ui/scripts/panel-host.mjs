@@ -139,7 +139,15 @@ export async function startPanelHost({ client, token = randomBytes(16).toString(
       });
       response.write(": connected\n\n");
       clients.add(response);
-      if (snapshot) broadcast({ type: "state", state: JSON.parse(snapshot) });
+      if (snapshot) {
+        try {
+          broadcast({ type: "state", state: JSON.parse(snapshot) });
+        } catch {
+          // A snapshot that will not parse is not worth a process exit; the poll
+          // replaces it on the next tick.
+          snapshot = null;
+        }
+      }
       request.on("close", () => clients.delete(response));
       return;
     }
@@ -228,7 +236,14 @@ export async function startPanelHost({ client, token = randomBytes(16).toString(
         }
       }
       clients.clear();
-      await new Promise((resolve) => server.close(resolve));
+      // server.close() waits for connections that are still in flight, and a
+      // command whose page never answers is exactly that: bound the wait so the
+      // session can still end, and drop whatever is left.
+      await Promise.race([
+        new Promise((resolve) => server.close(resolve)),
+        new Promise((resolve) => setTimeout(resolve, 500)),
+      ]);
+      server.closeAllConnections?.();
     },
   };
 }

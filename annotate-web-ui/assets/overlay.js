@@ -1267,15 +1267,22 @@
     renderAnnotationList();
   }
 
-  function deleteActiveState() {
+  // The confirmation is asked by whichever surface the click came from. A
+  // command from the floating panel arrives already confirmed, because that
+  // window's own button asks first: a dialog raised here would appear in a
+  // browser window the user may not even be looking at, and a modal dialog
+  // blocks the renderer — which would leave the panel waiting on a reply that
+  // cannot come until someone finds that dialog.
+  function deleteActiveState(options = {}) {
     const state = activeState();
     if (!state) return;
-    const annotationCount = annotationsForState(state.id).length;
-    const detail =
-      annotationCount > 0
+    if (!options.confirmed) {
+      const annotationCount = annotationsForState(state.id).length;
+      const detail = annotationCount
         ? `，并同时删除其中 ${annotationCount} 条标注`
         : "";
-    if (!window.confirm(`确定删除当前冻结页面${detail}吗？`)) return;
+      if (!window.confirm(`确定删除当前冻结页面${detail}吗？`)) return;
+    }
 
     send("delete-state", {
       stateId: state.id,
@@ -2139,12 +2146,18 @@
   // An intent is edited in one place: the panel's own fields. A command writes
   // that field and runs the same update path the keystroke would have run.
   function panelSetEditorField(field, value) {
-    const target = app.ui[field];
-    if (!target || typeof target.value !== "string") return false;
     if (!["expected", "scope", "breakpoint", "priority", "invariants"].includes(field)) {
       return false;
     }
-    target.value = String(value ?? "");
+    const target = app.ui[field];
+    if (!target || typeof target.value !== "string") return false;
+    const next = String(value ?? "");
+    // The three selects only accept values they actually offer; anything else
+    // would silently become "" and be written into the intent.
+    if (target.tagName === "SELECT" && ![...target.options].some((option) => option.value === next)) {
+      return false;
+    }
+    target.value = next;
     updateSelectedIntent();
     return true;
   }
@@ -2179,7 +2192,9 @@
           setMode("frozen");
           return { ok: true };
         case "delete-state":
-          deleteActiveState();
+          // Confirmed by the panel itself (two-step button); the in-page button
+          // keeps its own dialog.
+          deleteActiveState({ confirmed: command.confirmed === true });
           return { ok: true };
         case "state-description": {
           const current = activeState();
