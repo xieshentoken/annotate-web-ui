@@ -189,9 +189,10 @@
   .pane .hit { fill: rgba(0,0,0,.05); stroke: var(--ink); stroke-width: 1; }
   .pane .sel { fill: rgba(242,252,179,.45); stroke: var(--ink); stroke-width: 1.5; }
   .pane .ghost { fill: rgba(255,220,92,.35); stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 5 4; }
-  .pane .handle { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; cursor: nwse-resize; }
-  .pane .handle.n, .pane .handle.s { cursor: ns-resize; }
-  .pane .handle.e, .pane .handle.w { cursor: ew-resize; }
+  .pane .handle { fill: var(--paper); stroke: var(--ink); pointer-events: none; }
+  .pane .handle-grab { fill: transparent; stroke: none; pointer-events: all; cursor: nwse-resize; }
+  .pane .handle-grab.n, .pane .handle-grab.s { cursor: ns-resize; }
+  .pane .handle-grab.e, .pane .handle-grab.w { cursor: ew-resize; }
   /* User annotations take stroke/fill from the JS mark colour, so the active one
      can flip to saffron; CSS carries geometry and the label typography. */
   .pane .anno { fill: none; stroke-width: 2; }
@@ -774,11 +775,23 @@ function paintOverlay(overlay, state, scale) {
         e: [r.x + r.width, r.y + r.height / 2], se: [r.x + r.width, r.y + r.height],
         s: [r.x + r.width / 2, r.y + r.height], sw: [r.x, r.y + r.height], w: [r.x, r.y + r.height / 2],
       };
+      // Sizes are derived in view-box units from a constant CSS-pixel target, so a
+      // handle stays the same size on screen at every zoom. A fixed 8 units shrank
+      // to about 3px at the default fit zoom, which is why it could not be grabbed.
+      // The grab rect sits under the mark and gives a pointer target larger than it.
+      const unit = 1 / scale;
       for (const name of HANDLES) {
         const [cx, cy] = points[name];
+        const grab = 24 * unit;
+        const mark = 11 * unit;
         overlay.append(svg("rect", {
-          class: `handle ${name}`, x: cx - 4, y: cy - 4, width: 8, height: 8,
-          "data-handle": name, rx: 1.5,
+          class: `handle-grab ${name}`, "data-handle": name,
+          x: cx - grab / 2, y: cy - grab / 2, width: grab, height: grab,
+        }));
+        overlay.append(svg("rect", {
+          class: `handle ${name}`,
+          x: cx - mark / 2, y: cy - mark / 2, width: mark, height: mark,
+          rx: 1.5 * unit, "stroke-width": 1.5 * unit,
         }));
       }
     }
