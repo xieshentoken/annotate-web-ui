@@ -16,12 +16,184 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildChangeSpec } from "./build-change-spec.mjs";
+import { evaluate } from "./lib/cdp.mjs";
+import { gitInfo } from "./lib/session.mjs";
+import { startPanelHost } from "./panel-host.mjs";
 import { resolveStaticSite, startStaticSite } from "./static-site.mjs";
 import { isAllowedLocalUrl, validateSessionData } from "./validate-session.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OVERLAY_PATH = path.resolve(SCRIPT_DIR, "../assets/overlay.js");
 const PROBE_PATH = path.resolve(SCRIPT_DIR, "../assets/inventory-probe.js");
+const PANEL_BUILD_PATH = path.resolve(SCRIPT_DIR, "native/build-panel.mjs");
+
+const DEFAULT_VIEWPORT = { width: 1280, height: 800, deviceScaleFactor: 1 };
+const LOAD_TIMEOUT_MS = 20000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/* Record the baseline revision that the review step diffs against.
+ *
+ * This used to not exist. `start-session` saved only the legacy top-level
+ * states and annotations, and `normalizeSession` then synthesized a baseline
+ * revision carrying `inventory: null` on every load. Nothing can be diffed
+ * against an empty inventory, so `review-session` threw a TypeError on the
+ * first run; on the next one it silently fell through to the first *result*
+ * revision and produced a review with no annotations in it at all, because
+ * annotations hang off the baseline.
+ *
+ * The inventory has to be taken here, not later: this is the last moment the
+ * page still matches what the user annotated. Best-effort by design — the
+ * annotations are the user's work and are already validated, so a page that
+ * will not reload must not lose them. A partial or missing baseline leaves the
+ * session reviewable-but-uncomparable, which `review-session` now reports. */
+async function attachBaselineRevision({
+  client,
+  probeSource,
+  session,
+  sessionDir,
+  repoPath,
+}) {
+  const states = Array.isArray(session.states) ? session.states : [];
+  if (states.length === 0) return null;
+  if (Array.isArray(session.revisions) && session.revisions.length > 0) {
+    return session.revisions[0].id;
+  }
+
+  const revisionId = "rev-001";
+  const captured = [];
+  for (const state of states) {
+    const viewport = state.viewport || { ...DEFAULT_VIEWPORT };
+    try {
+      await client.send("Emulation.setDeviceMetricsOverride", {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: viewport.deviceScaleFactor || 1,
+        mobile: false,
+      });
+      await client.send("Page.navigate", { url: state.url || session.targetUrl });
+      const deadline = Date.now() + LOAD_TIMEOUT_MS;
+      for (;;) {
+        const ready = await evaluate(client, "document.readyState").catch(
+          () => "loading",
+        );
+        if (ready === "complete") break;
+        if (Date.now() > deadline) {
+          throw new Error(`page never finished loading: ${state.url}`);
+        }
+        await sleep(100);
+      }
+      await evaluate(
+        client,
+        "document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true",
+      ).catch(() => {});
+      await sleep(250);
+      await evaluate(
+        client,
+        `(() => { window.scrollTo(${state.scroll?.x || 0}, ${state.scroll?.y || 0}); return true; })()`,
+      );
+      await evaluate(client, probeSource);
+      await sleep(150);
+
+      const inventory = await evaluate(
+        client,
+        `window.__SYMBUI_INVENTORY__(${JSON.stringify({ stateId: state.id, includeAncestry: false })})`,
+      );
+      if (!inventory || !Array.isArray(inventory.elements)) {
+        throw new Error(`inventory probe returned nothing for ${state.id}`);
+      }
+      captured.push({
+        stateId: state.id,
+        viewport: inventory.viewport,
+        elements: inventory.elements,
+        stats: inventory.stats,
+      });
+    } catch (error) {
+      console.warn(
+        `WARN: baseline inventory for ${state.id} failed: ${error.message}`,
+      );
+    }
+  }
+
+  const missingStates = states
+    .filter((state) => !captured.some((item) => item.stateId === state.id))
+    .map((state) => ({ stateId: state.id, reason: "inventory not captured" }));
+  if (captured.length === 0) {
+    console.warn(
+      "WARN: no baseline inventory could be captured; the review step will not be able to compare this session.",
+    );
+    return null;
+  }
+
+  const inventoryPath = path.join(sessionDir, "inventory", `${revisionId}.json`);
+  await mkdir(path.dirname(inventoryPath), { recursive: true });
+  await writeJson(inventoryPath, {
+    revisionId,
+    role: "baseline",
+    capturedAt: new Date().toISOString(),
+    states: captured,
+  });
+
+  session.revisions = [
+    {
+      id: revisionId,
+      roundIndex: 0,
+      role: "baseline",
+      createdAt: session.createdAt || new Date().toISOString(),
+      git: gitInfo(repoPath),
+      /* The state's own `before-<id>.png` stays the reference image: it is what
+       * the user actually annotated, and the review preview copies it directly
+       * rather than looking inside `revisions/`. */
+      states: states.map((state) => ({ ...state })),
+      inventory: path
+        .relative(sessionDir, inventoryPath)
+        .split(path.sep)
+        .join("/"),
+      missingStates,
+      stats: {
+        elements: captured.reduce(
+          (sum, item) => sum + (item.stats?.elements || item.elements.length),
+          0,
+        ),
+        anchored: captured.reduce(
+          (sum, item) => sum + (item.stats?.anchored || 0),
+          0,
+        ),
+      },
+    },
+  ];
+  session.rounds = [
+    {
+      id: "R0",
+      index: 0,
+      fromRevision: null,
+      toRevision: revisionId,
+      closedAt: session.completedAt || session.createdAt || null,
+      annotations: (Array.isArray(session.annotations)
+        ? session.annotations
+        : []
+      ).map((annotation) => ({
+        ...annotation,
+        revisionId: annotation.revisionId || revisionId,
+      })),
+      diff: null,
+      verdicts: [],
+      reviewAnnotations: [],
+      consolidatedRequest: null,
+    },
+  ];
+
+  for (const item of captured) {
+    console.log(
+      `  基线 ${item.stateId}: ${item.elements.length} 个元素${
+        item.stats?.anchored ? `，${item.stats.anchored} 个有源码锚点` : ""
+      }`,
+    );
+  }
+  return revisionId;
+}
 
 function parseArgs(argv) {
   const result = {};
@@ -52,6 +224,8 @@ function usage() {
     "  --chrome /path        Override the Chrome executable",
     "  --debug-port 9333     Use a fixed loopback debugging port",
     "  --keep-browser        Keep the isolated browser open after export",
+    "  --headless            Launch Chrome without a window (for tests)",
+    "  --float               Show the controls in a floating macOS window (needs Xcode CLT)",
   ].join("\n");
 }
 
@@ -336,6 +510,10 @@ async function main() {
       createdAt,
       repoPath,
       targetUrl,
+      // A session with a floating window starts with its in-page panel folded
+      // away: the same controls are already on the desktop, and the copy inside
+      // the page only has to stay out of the user's way.
+      floatPanel: args.float === true,
     })};`,
     // The probe lands first: the overlay resolves element keys through the
     // mapping the probe publishes, and a first-pass drag has to record the
@@ -348,6 +526,8 @@ async function main() {
   let completed = false;
   let shuttingDown = false;
   let client;
+  let panelHost = null;
+  let panelShell = null;
   let finishResolve;
   const finished = new Promise((resolve) => {
     finishResolve = resolve;
@@ -367,6 +547,7 @@ async function main() {
       "--disable-component-update",
       "--disable-session-crashed-bubble",
       "--allow-insecure-localhost",
+      ...(args.headless ? ["--headless=new", "--hide-scrollbars"] : []),
       "--new-window",
       targetUrl,
     ],
@@ -402,9 +583,109 @@ async function main() {
     });
   }
 
+
+  /* The floating panel: a loopback relay plus a native macOS window that shows
+   * it always-on-top, so the controls can live outside the page being
+   * annotated. Best-effort by design — a missing toolchain, a non-macOS host or
+   * a window that will not open must not cost the user the session, so every
+   * failure here is reported and then ignored. The URL is printed either way:
+   * any browser can open the same surface. */
+  async function startFloatingPanel() {
+    try {
+      panelHost = await startPanelHost({
+        client,
+        onHello: (count) => console.log(`SYMBUI_PANEL_HELLO=${count}`),
+      });
+      console.log(`SYMBUI_FLOAT_PANEL=${panelHost.url}`);
+    } catch (error) {
+      console.error(
+        `Floating panel host failed to start: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      panelHost = null;
+      return;
+    }
+    if (process.platform !== "darwin") {
+      console.error(
+        "A floating window needs macOS; open SYMBUI_FLOAT_PANEL in any browser instead.",
+      );
+      return;
+    }
+
+    const build = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [PANEL_BUILD_PATH], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.once("error", (error) => resolve({ ok: false, error: error.message }));
+      child.once("exit", (code) => {
+        const lines = stdout.trim().split("\n").filter(Boolean);
+        const binary = lines.at(-1) || null;
+        resolve(
+          code === 0 && binary
+            ? { ok: true, binary }
+            : {
+                ok: false,
+                error: stderr.trim() || `exit ${code} with no build output`,
+              },
+        );
+      });
+    });
+    if (!build.ok) {
+      console.error(`Floating window was not built: ${build.error}`);
+      return;
+    }
+
+    panelShell = spawn(
+      build.binary,
+      ["--url", panelHost.url, "--title", "SymbUI"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    panelShell.stdout.on("data", (chunk) => {
+      const text = chunk.toString("utf8").trim();
+      if (!text) return;
+      console.log(text);
+      if (text.includes("SYMBUI_PANEL_READY")) {
+        console.log("SYMBUI_PANEL_WINDOW=ready");
+      }
+    });
+    panelShell.stderr.on("data", (chunk) => {
+      const text = chunk.toString("utf8").trim();
+      if (text) console.error(text);
+    });
+    panelShell.once("error", (error) => {
+      console.error(`Floating window failed to launch: ${error.message}`);
+      panelShell = null;
+    });
+    panelShell.once("exit", () => {
+      panelShell = null;
+    });
+  }
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    // The floating window belongs to this session: it goes away with it, and the
+    // relay stops before the browser it reports on does.
+    if (panelShell) {
+      try {
+        panelShell.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
+      panelShell = null;
+    }
+    if (panelHost) {
+      await panelHost.close().catch(() => {});
+      panelHost = null;
+    }
     if (client && !args["keep-browser"]) {
       await Promise.race([
         client.send("Browser.close").catch(() => {}),
@@ -453,7 +734,9 @@ async function main() {
         console.log(`SYMBUI_STATIC_ENTRY=${staticRuntime.entryPath}`);
       }
       console.log(
-        "Use the floating SymbUI panel. Click “完成并生成” when finished.",
+        args.float
+          ? "Use the floating SymbUI panel. Click “完成并生成” when finished."
+          : "Use the SymbUI panel in the page. Click “完成并生成” when finished.",
       );
     };
     client.on("Runtime.bindingCalled", (event) => {
@@ -519,6 +802,18 @@ async function main() {
             return;
           }
 
+          if (type === "panel-toast") {
+            // Everything the in-page panel tells the user (a refused finish, a
+            // group that cannot be built) is repeated on the floating panel:
+            // otherwise the surface the user is looking at stays silent.
+            panelHost?.push({
+              type: "toast",
+              tone: typeof payload.tone === "string" ? payload.tone : "info",
+              message: String(payload.message || ""),
+            });
+            return;
+          }
+
           if (type === "delete-state") {
             const stateId = String(payload.stateId || "");
             const beforeImage = path.basename(payload.beforeImage || "");
@@ -570,8 +865,41 @@ async function main() {
                 },
                 contextId,
               );
+              panelHost?.push({
+                type: "session",
+                changeRequest: result.requestPath,
+                implementationPrompt: result.promptPath,
+              });
               console.log(`SYMBUI_CHANGE_REQUEST=${result.requestPath}`);
               console.log(`SYMBUI_IMPLEMENTATION_PROMPT=${result.promptPath}`);
+              /* The overlay has been answered, so it is safe to navigate now.
+               * This has to happen before the window closes and before any
+               * coding agent touches the source: it is the last moment the page
+               * still matches what the user annotated, and the review step can
+               * diff against nothing without it. It navigates, which
+               * invalidates `contextId`, so it cannot run any earlier.
+               * Best-effort — the annotations are already saved. */
+              try {
+                const baseline = await attachBaselineRevision({
+                  client,
+                  probeSource,
+                  session,
+                  sessionDir,
+                  repoPath,
+                });
+                if (baseline) {
+                  await writeJson(
+                    path.join(sessionDir, "session.json"),
+                    session,
+                  );
+                }
+              } catch (error) {
+                console.warn(
+                  `WARN: baseline capture failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              }
               console.log(`SYMBUI_COMPLETE=1`);
               setTimeout(finishResolve, 1200);
             } catch (error) {
@@ -625,6 +953,9 @@ async function main() {
     if (overlayState?.present && isAllowedLocalUrl(overlayState.url)) {
       printReady(overlayState.url);
     }
+
+    // Last, so the panel opens onto a page the session can already read.
+    if (args.float) await startFloatingPanel();
 
     await finished;
   } catch (error) {

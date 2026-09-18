@@ -9,3 +9,4 @@ node_modules/
 # Vite leaves these behind when a config file fails to load.
 vite.config.*.timestamp-*.mjs
 .vite/
+annotate-web-ui/scripts/native/.build/

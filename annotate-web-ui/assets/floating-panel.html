@@ -1,0 +1,1660 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SymbUI 控制面板</title>
+<style>
+  /* ------------------------------------------------------------------ tokens
+     Design contract — same product as annotate-web-ui/assets/overlay.js. Every
+     variable, radius and control shape below is copied from the overlay's
+     shadow-root stylesheet so the two surfaces cannot drift apart.
+
+     Mission: a floating control window (target 380x720; usable at 320, min 340,
+     max 560) whose entire content is a host snapshot. The panel body scrolls;
+     the header, the status strips and the footer never do. No horizontal
+     scrolling is ever allowed.
+
+     Do:    1px solid ink hairline for every edge, radius only from
+            {12, 20, 24, 9999, 50%}, mono 13px/1.3px uppercase eyebrows,
+            0.2s ease on color / background-color / border-color / opacity only,
+            ink as the single structural + selection color,
+            wash #f2fcb3 for annotation selection, frozen status and the
+            manipulation note, saffron #ffdc5c for the active tool and for a
+            transient mode (picking / capturing / reconnecting).
+     Don't: the six-color header spectrum (used zero times here), chromatic
+            fills beyond wash + saffron, hover transforms or scaling, weight
+            600-700 (650 is the ceiling), body text under 11px, any second
+            rendering path for the demo transport.
+
+     Density is the overlay's `.panel.compact` set, inline: this is a tool
+     window sitting on someone's desktop, not a page.
+     --------------------------------------------------------------------- */
+  :root {
+    --bone: #f8f8f8;
+    --paper: #ffffff;
+    --linen: #efefef;
+    --ink: #000000;
+    --carbon: #636363;
+    --slate: #888888;
+    --silver: #c6c6c6;
+    --graphite: #575757;
+    --void: #020204;
+    --wash: #f2fcb3;
+    --saffron: #ffdc5c;
+    --radius-card: 12px;
+    --radius-cta: 20px;
+    --radius-panel: 24px;
+    --radius-pill: 9999px;
+    --hairline: 1px solid var(--ink);
+    --shadow-sm: rgba(0,0,0,.06) 0px 2px 8px 0px, rgba(0,0,0,.04) 0px 0px 2px 0px;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --ease: 0.2s ease;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  /* The overlay's own convention is a `.hidden` class; both are kept so the two
+     surfaces agree on how a region is hidden. */
+  .hidden { display: none !important; }
+  html { height: 100%; }
+  body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden; /* the window itself never scrolls */
+    color: var(--ink);
+    background: var(--bone);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, textarea, select {
+    font: inherit;
+    font-family: var(--font-sans);
+    transition:
+      color var(--ease),
+      background-color var(--ease),
+      border-color var(--ease),
+      opacity var(--ease);
+  }
+  button { cursor: pointer; }
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+  button:disabled { cursor: not-allowed; opacity: .45; }
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--bone);
+  }
+
+  /* ------------------------------------------------------------------ header */
+  .panel-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    padding: 10px 12px 9px;
+    border-bottom: var(--hairline);
+    background: var(--bone);
+  }
+  .brand {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-card);
+    color: var(--wash);
+    background: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.25;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+  }
+  .title { flex: 1 1 auto; min-width: 0; }
+  .title-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .eyebrow {
+    color: var(--carbon);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.3;
+    letter-spacing: 1.3px;
+    text-transform: uppercase;
+  }
+  .title strong {
+    display: block;
+    margin-top: 2px;
+    min-width: 0;
+    color: var(--ink);
+    font-size: 20px;
+    font-weight: 650;
+    letter-spacing: -.6px;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .status {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border: var(--hairline);
+    border-radius: var(--radius-pill);
+    color: var(--ink);
+    background: var(--linen);
+    font-size: 12px;
+    line-height: 1.35;
+    white-space: nowrap;
+  }
+  .status::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+  }
+  .status[data-mode="live"] { background: var(--linen); }
+  .status[data-mode="frozen"] { background: var(--wash); }
+  .status[data-mode="picking"],
+  .status[data-mode="capturing"] { background: var(--saffron); }
+  .demo-badge {
+    flex: 0 0 auto;
+    padding: 1px 7px;
+    border: 1px dashed var(--silver);
+    border-radius: var(--radius-pill);
+    color: var(--slate);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.35;
+    letter-spacing: .4px;
+    white-space: nowrap;
+  }
+
+  /* ------------------------------------------------------------------ strips */
+  .strips { flex: 0 0 auto; }
+  .strip {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: var(--hairline);
+    font-size: 12px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+  .strip::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    margin-top: 5px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+  }
+  .strip[data-tone="live"] { background: var(--saffron); }
+  .strip[data-tone="error"] {
+    color: var(--paper);
+    background: var(--void);
+    border-color: var(--void);
+    font-weight: 650;
+  }
+
+  /* -------------------------------------------------------------------- body */
+  .panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--slate) transparent;
+  }
+  .panel-body::-webkit-scrollbar { width: 9px; }
+  .panel-body::-webkit-scrollbar-thumb {
+    border: 3px solid var(--bone);
+    border-radius: var(--radius-pill);
+    background: var(--slate);
+  }
+  section {
+    padding: 10px 12px;
+    border-bottom: var(--hairline);
+    min-width: 0;
+  }
+  section:last-child { border-bottom: 0; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+  .row + .row { margin-top: 5px; }
+  .state-row .state-select { flex: 1 1 auto; min-width: 0; }
+  .delete-state { flex: 0 0 auto; white-space: nowrap; }
+
+  /* ----------------------------------------------------------------- buttons */
+  .primary, .secondary, .danger, .tool {
+    min-height: 30px;
+    padding: 4px 10px;
+    border: var(--hairline);
+    border-radius: var(--radius-pill);
+    color: var(--ink);
+    background: transparent;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  .primary {
+    flex: 1 1 auto;
+    min-width: 0;
+    border-radius: var(--radius-cta);
+    color: var(--paper);
+    background: var(--ink);
+    font-weight: 650;
+  }
+  .primary:hover { background: var(--graphite); }
+  .secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--linen);
+  }
+  .secondary:hover { background: var(--paper); }
+  .secondary.active,
+  .tool.active {
+    border-color: var(--ink);
+    color: var(--ink);
+    background: var(--saffron);
+  }
+  .secondary.active:hover,
+  .tool.active:hover { background: var(--saffron); }
+  .danger {
+    border-color: var(--ink);
+    color: var(--ink);
+    background: transparent;
+  }
+  .danger:hover { background: var(--linen); }
+
+  /* ------------------------------------------------------------------- tools */
+  .tool-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+  }
+  .tool {
+    min-width: 0;
+    padding: 4px;
+    background: var(--linen);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tool:hover { background: var(--paper); }
+  .tool-hint {
+    margin-top: 5px;
+    color: var(--carbon);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  /* --------------------------------------------------------- section heading */
+  .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    color: var(--carbon);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 1.3px;
+    line-height: 1.3;
+    text-transform: uppercase;
+  }
+  .section-title > span { min-width: 0; }
+  .section-title .hint {
+    color: var(--slate);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .section-title > button {
+    flex: 0 0 auto;
+    min-height: 26px;
+    padding: 2px 10px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* ------------------------------------------------------------------- forms */
+  select, input, textarea {
+    width: 100%;
+    min-width: 0;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    color: var(--ink);
+    background: var(--paper);
+    outline: none;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  select, input { height: 30px; padding: 0 8px; }
+  textarea { min-height: 60px; padding: 5px 8px; resize: vertical; }
+  ::placeholder { color: var(--slate); opacity: 1; }
+  select:focus, input:focus, textarea:focus {
+    border-color: var(--ink);
+    box-shadow: 0 0 0 3px rgba(242,252,179,.9);
+  }
+  label {
+    display: block;
+    margin-top: 8px;
+    min-width: 0;
+    color: var(--carbon);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  label > span { display: block; margin-bottom: 4px; }
+  .two-column {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 5px;
+  }
+  .priority-field { width: min(160px, 100%); }
+  .intent-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+    color: var(--carbon);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .intent-heading strong { color: var(--ink); font-size: 14px; font-weight: 650; }
+  .intent-heading-note { color: var(--slate); font-size: 11px; white-space: nowrap; }
+  .change-type-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+    margin-top: 5px;
+  }
+  .change-type {
+    min-width: 0;
+    min-height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px 3px;
+    border: var(--hairline);
+    border-radius: var(--radius-pill);
+    color: var(--ink);
+    background: var(--linen);
+    font-size: 12px;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+  .change-type:hover { background: var(--paper); }
+  .change-type.selected {
+    border-color: var(--ink);
+    color: var(--ink);
+    background: var(--wash);
+  }
+  .change-type.selected:hover { background: var(--wash); }
+  .change-type-check {
+    width: 10px;
+    flex: 0 0 auto;
+    font-size: 12px;
+    line-height: 1.25;
+    opacity: 0;
+  }
+  .change-type.selected .change-type-check { opacity: 1; }
+  .manipulation-note {
+    margin-top: 8px;
+    padding: 5px 8px;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    color: var(--ink);
+    background: var(--wash);
+    font-size: 12px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+  .manipulation-note .note-eyebrow {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--carbon);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+  }
+
+  /* ---------------------------------------------------------------- listings */
+  .annotation-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+  .annotation-item {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 8px;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    color: var(--ink);
+    background: var(--paper);
+    text-align: left;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .annotation-item:hover { background: var(--linen); }
+  .annotation-item.selected,
+  .annotation-item.selected:hover { background: var(--wash); }
+  .annotation-item strong {
+    flex: 0 0 auto;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: .6px;
+  }
+  .annotation-item span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+  .empty {
+    padding: 5px;
+    border: 1px dashed var(--silver);
+    border-radius: var(--radius-card);
+    color: var(--slate);
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  /* ------------------------------------------------------------------ groups */
+  .group-members {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    margin-top: 5px;
+    max-height: 96px;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .group-member {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    min-width: 0;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .group-member input {
+    flex: 0 0 auto;
+    width: 13px;
+    height: 13px;
+    padding: 0;
+    accent-color: var(--ink);
+  }
+  .group-member span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .group-list { display: grid; gap: 5px; margin-top: 5px; }
+  .group-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 8px;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    background: var(--paper);
+  }
+  .group-item-name { min-width: 0; height: 28px; font-size: 13px; }
+  .group-delete { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+  .group-item-meta {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    color: var(--slate);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .group-item-meta .group-item-id {
+    color: var(--carbon);
+    font-family: var(--font-mono);
+    letter-spacing: .6px;
+  }
+  .group-item-meta .group-item-members { min-width: 0; word-break: break-word; }
+  .group-item-meta .group-item-cohesion {
+    color: var(--carbon);
+    font-family: var(--font-mono);
+    letter-spacing: .6px;
+  }
+
+  /* ------------------------------------------------------------------ footer */
+  .panel-footer {
+    flex: 0 0 auto;
+    padding: 10px 12px;
+    border-top: var(--hairline);
+    background: var(--bone);
+  }
+  .finish {
+    width: 100%;
+    min-height: 36px;
+    border: var(--hairline);
+    border-radius: var(--radius-cta);
+    color: var(--paper);
+    background: var(--ink);
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.25;
+  }
+  .finish:hover { background: var(--graphite); }
+  .finish:disabled {
+    color: var(--slate);
+    background: var(--linen);
+    border-color: var(--silver);
+    opacity: 1;
+  }
+  .output {
+    margin-top: 8px;
+    padding: 5px 8px;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    color: var(--ink);
+    background: var(--paper);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+  .artifacts {
+    margin-top: 8px;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    background: var(--paper);
+    overflow: hidden;
+  }
+  .artifacts-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    padding: 5px 8px;
+  }
+  .artifacts-row + .artifacts-row { border-top: 1px solid var(--silver); }
+  .artifacts-label {
+    color: var(--slate);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: nowrap;
+  }
+  .artifacts-row code {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+
+  /* ------------------------------------------------------------------- toast */
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 14px;
+    z-index: 20;
+    max-width: calc(100% - 24px);
+    transform: translateX(-50%);
+    padding: 10px 14px;
+    border: var(--hairline);
+    border-radius: var(--radius-card);
+    color: var(--ink);
+    background: var(--paper);
+    box-shadow: var(--shadow-sm);
+    font-size: 13px;
+    line-height: 1.45;
+    word-break: break-word;
+    opacity: 0;
+    transition:
+      color var(--ease),
+      background-color var(--ease),
+      border-color var(--ease),
+      opacity var(--ease);
+    pointer-events: none;
+  }
+  .toast.visible { opacity: 1; }
+  .toast[data-tone="error"] {
+    color: var(--paper);
+    background: var(--void);
+    border-color: var(--void);
+  }
+  .toast[data-tone="success"] {
+    color: var(--ink);
+    background: var(--wash);
+    border-color: var(--ink);
+  }
+
+  /* ------------------------------------------------------------------- entry
+     Only inserted rows move, and only their opacity: the overlay's motion
+     language is color/opacity at 0.2s, never transforms or springs. The
+     stagger is capped so a long list never feels slower than the snapshot. */
+  .enter { animation: row-in var(--ease) both; }
+  @keyframes row-in { from { opacity: 0; } to { opacity: 1; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    button, input, textarea, select, .status, .toast, .strip { transition: none; }
+    .enter { animation: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header class="panel-header">
+      <div class="brand" aria-hidden="true">S</div>
+      <div class="title">
+        <div class="title-top">
+          <span class="eyebrow">SYMBUI</span>
+          <span class="status" id="status" data-mode="live">连接中</span>
+          <span class="demo-badge" id="demo-badge" hidden>演示数据</span>
+        </div>
+        <strong>控制面板</strong>
+      </div>
+    </header>
+
+    <div class="strips">
+      <div class="strip" id="strip-fatal" data-tone="error" role="alert" hidden></div>
+      <div class="strip" id="strip-offline" data-tone="live" role="status" aria-live="polite" hidden>与页面失联，正在重连…</div>
+    </div>
+
+    <div class="panel-body" id="panel-body">
+      <section>
+        <div class="row">
+          <button class="primary freeze" id="freeze" type="button">冻结当前画面</button>
+          <button class="secondary pick" id="pick" type="button" aria-pressed="false">选择元素</button>
+        </div>
+        <div class="row state-row">
+          <select class="state-select" id="state-select" aria-label="已捕获状态" disabled></select>
+          <button class="danger delete-state" id="delete-state" type="button" disabled>删除冻结页</button>
+        </div>
+        <label>
+          <span>当前状态／复现说明</span>
+          <input class="state-description" id="state-description" placeholder="例如：点击设置后打开账户弹窗">
+        </label>
+      </section>
+
+      <section>
+        <div class="section-title"><span>标注工具</span></div>
+        <div class="tool-grid" id="tool-grid" role="group" aria-label="标注工具">
+          <button class="tool undo" id="undo" type="button" title="删除最后一条标注">撤销</button>
+        </div>
+        <div class="tool-hint">移动／缩放作用于真实页面元素：before 取自 getBoundingClientRect()，位移量单位是 CSS px。</div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <span>标注列表</span>
+          <button class="danger" id="delete-selected" type="button">删除所选</button>
+        </div>
+        <div class="annotation-list" id="annotation-list"></div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <span>命名分组</span>
+          <span class="hint">勾选要一起改的标注</span>
+        </div>
+        <div class="row">
+          <input class="group-name" id="group-name" maxlength="64" placeholder="分组名称，例如：主操作区">
+          <button class="secondary group-create" id="group-create" type="button">建立分组</button>
+        </div>
+        <div class="group-members" id="group-members"></div>
+        <div class="group-list" id="group-list"></div>
+      </section>
+
+      <section class="editor" id="editor" hidden>
+        <div class="section-title"><span id="editor-title">修改说明</span></div>
+        <label>
+          <span>名称（可选，给这条标注起个名字）</span>
+          <input class="alias" id="alias" maxlength="64" placeholder="例如：UpgradeButton">
+        </label>
+        <div class="intent-heading">
+          <strong>想改什么？（可多选）</strong>
+          <span class="intent-heading-note">按 Tab 可达</span>
+        </div>
+        <div class="change-type-grid" id="operations" role="group" aria-label="想改什么，可多选"></div>
+        <label class="priority-field">
+          <span>优先级</span>
+          <select id="priority">
+            <option value="must">必须</option>
+            <option value="should">建议</option>
+          </select>
+        </label>
+        <div class="manipulation-note" id="manipulation-note" hidden>
+          <span class="note-eyebrow">测量值 · 必须写进预期</span>
+          <span id="manipulation-text"></span>
+        </div>
+        <label>
+          <span>希望改完后是什么样？（必填）</span>
+          <textarea class="expected" id="expected" rows="3"></textarea>
+        </label>
+        <div class="two-column">
+          <label>
+            <span>作用范围</span>
+            <select id="scope">
+              <option value="element">仅此元素</option>
+              <option value="repeated">同类组件</option>
+              <option value="page">当前页面</option>
+            </select>
+          </label>
+          <label>
+            <span>响应式范围</span>
+            <select id="breakpoint">
+              <option value="all">全部尺寸</option>
+              <option value="current">仅当前尺寸</option>
+              <option value="desktop">桌面端</option>
+              <option value="tablet">平板端</option>
+              <option value="mobile">移动端</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>保持不变</span>
+          <textarea id="invariants" rows="2" placeholder="例如：保留点击行为和移动端布局"></textarea>
+        </label>
+      </section>
+    </div>
+
+    <footer class="panel-footer">
+      <button class="finish" id="finish" type="button">完成并生成</button>
+      <div class="artifacts" id="artifacts" hidden>
+        <div class="artifacts-row">
+          <span class="artifacts-label">修改请求</span>
+          <code id="artifact-change">—</code>
+        </div>
+        <div class="artifacts-row">
+          <span class="artifacts-label">实现提示</span>
+          <code id="artifact-prompt">—</code>
+        </div>
+      </div>
+      <div class="output" id="output" hidden></div>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ======================================================= transport seam ==
+     `demo=1` replaces the transport only. Both transports push the same
+     {type:"state"|"toast"|"session"|"fatal"} messages into the same handler,
+     and every pixel below is produced by the same renderer.               */
+
+  var params = new URLSearchParams(location.search);
+  var token = params.get("token") || "";
+  var DEMO = params.get("demo") === "1";
+
+  var MODE_LABEL = { live: "实时", frozen: "已冻结", picking: "选择元素", capturing: "正在冻结" };
+  var TOAST_MS = 3200;
+
+  function clone(value) { return JSON.parse(JSON.stringify(value)); }
+
+  function liveTransport() {
+    var eventUrl = "/events?token=" + encodeURIComponent(token);
+    var commandUrl = "/command?token=" + encodeURIComponent(token);
+    var source = null;
+    return {
+      connect: function (handlers) {
+        fetch("/hello?token=" + encodeURIComponent(token), { method: "POST" })["catch"](function () {});
+        source = new EventSource(eventUrl);
+        source.addEventListener("open", function () { handlers.online(); });
+        source.addEventListener("message", function (event) {
+          var payload = null;
+          try { payload = JSON.parse(event.data); } catch (error) { return; }
+          handlers.message(payload);
+        });
+        // Reconnection stays with the browser; this only reports the gap.
+        source.addEventListener("error", function () { handlers.offline(); });
+      },
+      send: function (command) {
+        return fetch(commandUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          // The body is the command object itself: panel-host.mjs hands the
+          // parsed body straight to the page's __SYMBUI_PANEL_COMMAND__, which
+          // reads `command.command` at the top level of what it receives.
+          body: JSON.stringify(command)
+        }).then(function (response) {
+          return response.json()["catch"](function () { return null; }).then(function (result) {
+            if (!result || result.ok !== true) {
+              return { ok: false, error: (result && result.error) || ("指令被拒绝（HTTP " + response.status + "）") };
+            }
+            return { ok: true };
+          });
+        })["catch"](function (error) {
+          return { ok: false, error: "指令发送失败：" + (error && error.message ? error.message : String(error)) };
+        });
+      }
+    };
+  }
+
+  var transport = DEMO ? demoTransport() : liveTransport();
+
+  /* =========================================================== renderer === */
+  var els = {
+    status: document.getElementById("status"),
+    demoBadge: document.getElementById("demo-badge"),
+    stripFatal: document.getElementById("strip-fatal"),
+    stripOffline: document.getElementById("strip-offline"),
+    freeze: document.getElementById("freeze"),
+    pick: document.getElementById("pick"),
+    stateSelect: document.getElementById("state-select"),
+    deleteState: document.getElementById("delete-state"),
+    stateDescription: document.getElementById("state-description"),
+    toolGrid: document.getElementById("tool-grid"),
+    undo: document.getElementById("undo"),
+    deleteSelected: document.getElementById("delete-selected"),
+    annotationList: document.getElementById("annotation-list"),
+    groupName: document.getElementById("group-name"),
+    groupCreate: document.getElementById("group-create"),
+    groupMembers: document.getElementById("group-members"),
+    groupList: document.getElementById("group-list"),
+    editor: document.getElementById("editor"),
+    editorTitle: document.getElementById("editor-title"),
+    alias: document.getElementById("alias"),
+    operations: document.getElementById("operations"),
+    priority: document.getElementById("priority"),
+    manipulationNote: document.getElementById("manipulation-note"),
+    manipulationText: document.getElementById("manipulation-text"),
+    expected: document.getElementById("expected"),
+    scope: document.getElementById("scope"),
+    breakpoint: document.getElementById("breakpoint"),
+    invariants: document.getElementById("invariants"),
+    finish: document.getElementById("finish"),
+    artifacts: document.getElementById("artifacts"),
+    artifactChange: document.getElementById("artifact-change"),
+    artifactPrompt: document.getElementById("artifact-prompt"),
+    output: document.getElementById("output"),
+    toast: document.getElementById("toast")
+  };
+
+  var current = null;        // the one data source every render reads
+  var connected = true;
+  var fatalMessage = "";
+  var submitted = false;
+  var artifacts = null;
+  var toastTimer = 0;
+
+  /* ------------------------------------------------------------ utilities */
+
+  // Keyed, in-place list reconciliation. Nodes are reused by key, so typing
+  // inside a row survives the snapshot flood that follows every command.
+  function syncList(container, items, keyOf, create, update) {
+    var nodes = container.__nodes;
+    if (!nodes) { nodes = new Map(); container.__nodes = nodes; }
+    var order = [];
+    for (var index = 0; index < items.length; index += 1) {
+      var item = items[index];
+      var key = keyOf(item);
+      order.push(key);
+      var node = nodes.get(key);
+      if (!node) {
+        node = create(item, key);
+        node.classList.add("enter");
+        node.style.animationDelay = Math.min(index, 4) * 30 + "ms";
+        node.addEventListener("animationend", function (event) {
+          event.currentTarget.classList.remove("enter");
+          event.currentTarget.style.animationDelay = "";
+        }, { once: true });
+        nodes.set(key, node);
+      }
+      update(node, item, index);
+      var at = container.children[index];
+      // Moving a node that holds focus re-inserts it and would blur the field
+      // mid-keystroke, so a reorder gives way to the caret.
+      if (at !== node && !node.contains(document.activeElement)) {
+        container.insertBefore(node, at || null);
+      }
+    }
+    nodes.forEach(function (node, key) {
+      if (order.indexOf(key) === -1) { node.remove(); nodes["delete"](key); }
+    });
+  }
+
+  // A region is hidden both ways: the attribute for assistive tech and the
+  // overlay's own `.hidden` class, so the two surfaces agree on the spelling.
+  function setHidden(el, hidden) {
+    el.hidden = hidden;
+    el.classList.toggle("hidden", hidden);
+  }
+
+  function setEmpty(container, message) {
+    var node = null;
+    for (var index = 0; index < container.children.length; index += 1) {
+      if (container.children[index].classList.contains("empty")) { node = container.children[index]; break; }
+    }
+    if (!message) { if (node) node.remove(); return; }
+    if (!node) { node = document.createElement("div"); node.className = "empty"; container.appendChild(node); }
+    if (node.textContent !== message) node.textContent = message;
+    if (container.lastElementChild !== node) container.appendChild(node);
+  }
+
+  function keepLast(container, node) {
+    if (container.lastElementChild !== node) container.appendChild(node);
+  }
+
+  // A focused text field keeps whatever the user has typed: a snapshot may only
+  // write it when the field now belongs to another entity.
+  function setFieldValue(el, value, entity) {
+    var same = el.dataset.entity === entity;
+    el.dataset.entity = entity;
+    if (document.activeElement === el && same) return;
+    var next = value == null ? "" : String(value);
+    if (el.value !== next) el.value = next;
+  }
+
+  function setSelectValue(el, value) {
+    if (typeof value !== "string" || value === "") return;
+    for (var index = 0; index < el.options.length; index += 1) {
+      if (el.options[index].value === value) {
+        if (el.value !== value) el.value = value;
+        return;
+      }
+    }
+  }
+
+  function showToast(message, tone) {
+    if (!message) return;
+    var kind = tone === "error" || tone === "success" ? tone : "info";
+    els.toast.textContent = String(message);
+    els.toast.dataset.tone = kind;
+    els.toast.setAttribute("role", kind === "error" ? "alert" : "status");
+    els.toast.classList.add("visible");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      els.toast.classList.remove("visible");
+      toastTimer = 0;
+    }, TOAST_MS);
+  }
+
+  /* ------------------------------------------------------------ commands */
+
+  var pendings = new Map();
+
+  // At most one command per 200ms per text field, with a trailing send so the
+  // last keystroke is never dropped. `change`/`blur` settle the field: the send
+  // is repeated there only when the last attempt did not carry the value the
+  // field holds now (a failed send stays pending instead of looping).
+  function queueText(key, trigger) {
+    var entry = pendings.get(key);
+    if (!entry) { entry = { trigger: trigger, timer: 0, last: 0, dirty: false, attempt: undefined }; pendings.set(key, entry); }
+    entry.trigger = trigger;
+    entry.dirty = true;
+    var wait = entry.last === 0 ? 0 : Math.max(0, 200 - (performance.now() - entry.last));
+    if (wait <= 0) fireText(key, entry);
+    else if (!entry.timer) entry.timer = setTimeout(function () { fireText(key, entry); }, wait);
+  }
+
+  function fireText(key, entry) {
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = 0; }
+    if (!entry.dirty) return;
+    entry.dirty = false;
+    entry.last = performance.now();
+    try { entry.trigger(entry); } catch (error) { /* a failed send must not eat keystrokes */ }
+  }
+
+  function flushPendingText() {
+    pendings.forEach(function (entry, key) { fireText(key, entry); });
+  }
+  function settleText(el, key) {
+    var entry = pendings.get(key);
+    if (entry && entry.attempt !== undefined && entry.attempt !== el.value) entry.dirty = true;
+    flushPendingText();
+  }
+  function handleResult(result) {
+    if (!result || result.ok !== true) {
+      showToast((result && result.error) || "指令失败", "error");
+      return result;
+    }
+    if (result.toast) showToast(result.toast.message, result.toast.tone);
+    return result;
+  }
+
+  function push(command) {
+    return Promise.resolve(transport.send(command)).then(handleResult)["catch"](function (error) {
+      showToast("指令发送失败：" + (error && error.message ? error.message : String(error)), "error");
+      return { ok: false, error: String(error) };
+    });
+  }
+
+  // Anything that is not a keystroke settles the text fields first, so e.g.
+  // 建立分组 cannot be answered from a half-typed name.
+  function sendNow(command) {
+    flushPendingText();
+    return push(command);
+  }
+
+  function bindText(el, key, build) {
+    el.addEventListener("input", function () {
+      queueText(key, function (entry) {
+        var value = el.value;
+        // Recorded before the request goes out: a blur immediately followed by
+        // change must not send the same value twice.
+        entry.attempt = value;
+        return push(build(value)).then(function (result) {
+          if (!result || result.ok !== true) entry.attempt = undefined;
+          return result;
+        });
+      });
+    });
+    var settle = function () { settleText(el, key); };
+    el.addEventListener("change", settle);
+    el.addEventListener("blur", settle);
+  }
+
+  /* ------------------------------------------------------------ rendering */
+  function render() {
+    if (!current) return;
+    renderHeader(current);
+    renderState(current);
+    renderTools(current);
+    renderAnnotations(current);
+    renderGroups(current);
+    renderEditor(current);
+    renderFooter(current);
+  }
+
+  function renderHeader(snapshot) {
+    var mode = snapshot.mode || "live";
+    els.status.textContent = snapshot.status || MODE_LABEL[mode] || "";
+    els.status.dataset.mode = mode;
+    els.freeze.textContent = mode === "frozen" ? "返回实时页面" : "冻结当前画面";
+    var picking = mode === "picking";
+    els.pick.classList.toggle("active", picking);
+    els.pick.setAttribute("aria-pressed", String(picking));
+  }
+
+  function renderStrips() {
+    setHidden(els.stripFatal, fatalMessage === "");
+    if (fatalMessage) els.stripFatal.textContent = fatalMessage;
+    setHidden(els.stripOffline, connected || fatalMessage !== "");
+  }
+
+  function renderState(snapshot) {
+    var states = Array.isArray(snapshot.states) ? snapshot.states : [];
+    var active = null;
+    for (var index = 0; index < states.length; index += 1) {
+      if (states[index].active === true) { active = states[index]; break; }
+    }
+    var signature = states.map(function (state) { return state.id + "\u0000" + (state.label || ""); }).join("\u0001");
+    if (els.stateSelect.dataset.signature !== signature) {
+      els.stateSelect.dataset.signature = signature;
+      while (els.stateSelect.firstChild) els.stateSelect.removeChild(els.stateSelect.firstChild);
+      if (states.length === 0) {
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "（暂无冻结页）";
+        els.stateSelect.appendChild(placeholder);
+      } else {
+        states.forEach(function (state) {
+          var option = document.createElement("option");
+          option.value = state.id;
+          option.textContent = state.label || state.id;
+          els.stateSelect.appendChild(option);
+        });
+      }
+    }
+    var activeId = active ? active.id : "";
+    if (els.stateSelect.value !== activeId && !els.stateSelect.contains(document.activeElement)) {
+      els.stateSelect.value = activeId;
+    }
+    els.stateSelect.disabled = states.length === 0;
+    els.deleteState.disabled = states.length === 0;
+    setFieldValue(els.stateDescription, snapshot.stateDescription, "state:" + (activeId || "none"));
+  }
+
+  function renderTools(snapshot) {
+    var tools = Array.isArray(snapshot.tools) ? snapshot.tools : [];
+    // Same gate as the overlay: annotation tools need a frozen page.
+    var locked = (snapshot.mode || "live") !== "frozen";
+    syncList(els.toolGrid, tools,
+      function (tool) { return tool.id; },
+      function (tool) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "tool";
+        button.dataset.tool = tool.id;
+        button.addEventListener("click", function () {
+          sendNow({ command: "tool", tool: button.dataset.tool });
+        });
+        return button;
+      },
+      function (button, tool) {
+        var active = snapshot.tool === tool.id;
+        button.textContent = tool.label || tool.id;
+        button.disabled = locked;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+        button.title = (tool.label || tool.id) + (locked ? "（先冻结页面）" : "");
+      });
+    keepLast(els.toolGrid, els.undo);
+    els.undo.disabled = snapshot.canUndo !== true;
+  }
+
+  function renderAnnotations(snapshot) {
+    var annotations = Array.isArray(snapshot.annotations) ? snapshot.annotations : [];
+    syncList(els.annotationList, annotations,
+      function (annotation) { return annotation.id; },
+      function (annotation, key) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "annotation-item";
+        button.appendChild(document.createElement("strong"));
+        button.appendChild(document.createElement("span"));
+        button.addEventListener("click", function () {
+          sendNow({ command: "select-annotation", annotationId: key });
+        });
+        return button;
+      },
+      function (button, annotation) {
+        var selected = annotation.selected === true;
+        var text = annotation.alias ? annotation.alias + " · " + (annotation.label || annotation.kind || "") : (annotation.label || annotation.kind || "");
+        button.firstElementChild.textContent = annotation.id;
+        button.lastElementChild.textContent = text;
+        button.title = annotation.id + " " + text;
+        button.classList.toggle("selected", selected);
+        if (selected) button.setAttribute("aria-current", "true");
+        else button.removeAttribute("aria-current");
+      });
+    setEmpty(els.annotationList, annotations.length === 0 ? "尚无标注" : "");
+    var hasSelection = annotations.some(function (annotation) { return annotation.selected === true; });
+    els.deleteSelected.disabled = !hasSelection;
+  }
+
+  function renderGroups(snapshot) {
+    var groups = snapshot.groups || {};
+    setFieldValue(els.groupName, groups.name, "groups.name");
+
+    var candidates = Array.isArray(groups.candidates) ? groups.candidates : [];
+    syncList(els.groupMembers, candidates,
+      function (candidate) { return candidate.annotationId; },
+      function (candidate, key) {
+        var label = document.createElement("label");
+        label.className = "group-member";
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = key;
+        checkbox.addEventListener("change", function () {
+          sendNow({ command: "group-toggle-member", annotationId: key, checked: checkbox.checked });
+        });
+        var text = document.createElement("span");
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        return label;
+      },
+      function (label, candidate) {
+        label.firstChild.checked = candidate.checked === true;
+        label.lastChild.textContent = candidate.label || candidate.annotationId;
+      });
+    setEmpty(els.groupMembers, candidates.length === 0 ? "冻结页面并标注后，可把同一批标注建成一组" : "");
+
+    var list = Array.isArray(groups.list) ? groups.list : [];
+    syncList(els.groupList, list,
+      function (group) { return group.id; },
+      function (group, key) {
+        var row = document.createElement("div");
+        row.className = "group-item";
+        var name = document.createElement("input");
+        name.className = "group-item-name";
+        name.maxLength = 64;
+        name.setAttribute("aria-label", "分组名称 " + key);
+        bindText(name, "group:" + key, function (value) {
+          return { command: "group-rename", groupId: key, name: value };
+        });
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger group-delete";
+        remove.textContent = "删除";
+        remove.title = "删除分组 " + key;
+        remove.addEventListener("click", function () {
+          sendNow({ command: "group-delete", groupId: key });
+        });
+        var meta = document.createElement("div");
+        meta.className = "group-item-meta";
+        meta.appendChild(document.createElement("span")).className = "group-item-id";
+        meta.appendChild(document.createElement("span")).className = "group-item-members";
+        meta.appendChild(document.createElement("span")).className = "group-item-cohesion";
+        row.appendChild(name);
+        row.appendChild(remove);
+        row.appendChild(meta);
+        return row;
+      },
+      function (row, group) {
+        setFieldValue(row.firstChild, group.name, "group:" + group.id + ":name");
+        var meta = row.lastElementChild;
+        meta.children[0].textContent = group.id;
+        meta.children[1].textContent = group.members || "—";
+        meta.children[2].textContent = group.cohesion || "";
+      });
+    setEmpty(els.groupList, list.length === 0 ? "尚无分组" : "");
+  }
+
+  function renderEditor(snapshot) {
+    var editor = snapshot.editor || {};
+    var visible = editor.visible === true;
+    setHidden(els.editor, !visible);
+    if (!visible) return;
+    var id = editor.annotationId || "";
+    els.editorTitle.textContent = editor.title || "修改说明";
+
+    var operations = Array.isArray(editor.operations) ? editor.operations : [];
+    syncList(els.operations, operations,
+      function (operation) { return operation.id; },
+      function (operation, key) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "change-type";
+        button.dataset.operation = key;
+        var check = document.createElement("span");
+        check.className = "change-type-check";
+        check.setAttribute("aria-hidden", "true");
+        check.textContent = "✓";
+        var text = document.createElement("span");
+        button.appendChild(check);
+        button.appendChild(text);
+        button.addEventListener("click", function () {
+          var selected = button.getAttribute("aria-pressed") === "true";
+          sendNow({ command: "operation", operation: key, selected: !selected });
+        });
+        return button;
+      },
+      function (button, operation) {
+        var selected = operation.selected === true;
+        button.lastChild.textContent = operation.label || operation.id;
+        // The snapshot may carry the operation's own explanation; hover text is
+        // a bonus, never the only place the meaning lives.
+        if (operation.help) button.title = operation.help;
+        else button.removeAttribute("title");
+        button.classList.toggle("selected", selected);
+        button.setAttribute("aria-pressed", String(selected));
+      });
+
+    var note = editor.manipulationNote || "";
+    setHidden(els.manipulationNote, note === "");
+    if (note) els.manipulationText.textContent = note;
+
+    setFieldValue(els.alias, editor.alias, "editor:" + id + ":alias");
+    setFieldValue(els.expected, editor.expected, "editor:" + id + ":expected");
+    setFieldValue(els.invariants, editor.invariants, "editor:" + id + ":invariants");
+    els.expected.placeholder = editor.expectedPlaceholder || "";
+    setSelectValue(els.scope, editor.scope);
+    setSelectValue(els.breakpoint, editor.breakpoint);
+    setSelectValue(els.priority, editor.priority);
+  }
+
+  function renderFooter(snapshot) {
+    var finish = snapshot.finish || {};
+    els.finish.disabled = finish.disabled === true || submitted || fatalMessage !== "";
+    els.finish.textContent = submitted ? "已提交" : (finish.label || "完成并生成");
+    if (fatalMessage) els.finish.setAttribute("aria-describedby", "strip-fatal");
+    else els.finish.removeAttribute("aria-describedby");
+
+    var output = snapshot.output || "";
+    setHidden(els.output, output === "");
+    if (output) els.output.textContent = output;
+
+    setHidden(els.artifacts, !artifacts);
+    if (artifacts) {
+      els.artifactChange.textContent = artifacts.changeRequest || "—";
+      els.artifactPrompt.textContent = artifacts.implementationPrompt || "—";
+    }
+  }
+
+  /* ------------------------------------------------------- inbound messages */
+
+  function onMessage(payload) {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.type === "state") {
+      if (payload.state && typeof payload.state === "object") {
+        current = payload.state;
+        render();
+      }
+      return;
+    }
+    if (payload.type === "toast") {
+      showToast(payload.message, payload.tone);
+      return;
+    }
+    if (payload.type === "session") {
+      artifacts = {
+        changeRequest: payload.changeRequest || "",
+        implementationPrompt: payload.implementationPrompt || ""
+      };
+      submitted = true;
+      renderFooter(current || {});
+      if (current) renderGroups(current);
+      showToast("已生成修改请求与实现提示", "success");
+      return;
+    }
+    if (payload.type === "fatal") {
+      fatalMessage = payload.message || "发生致命错误";
+      renderStrips();
+      renderFooter(current || {});
+    }
+  }
+
+  /* ---------------------------------------------------------------- wiring */
+
+  els.freeze.addEventListener("click", function () { sendNow({ command: "freeze" }); });
+  els.pick.addEventListener("click", function () { sendNow({ command: "pick" }); });
+  els.undo.addEventListener("click", function () { sendNow({ command: "undo" }); });
+  els.deleteSelected.addEventListener("click", function () { sendNow({ command: "delete-selected" }); });
+  els.groupCreate.addEventListener("click", function () { sendNow({ command: "group-create" }); });
+  els.finish.addEventListener("click", function () { sendNow({ command: "finish" }); });
+  els.deleteState.addEventListener("click", function () { sendNow({ command: "delete-state" }); });
+  els.stateSelect.addEventListener("change", function () {
+    sendNow({ command: "select-state", stateId: els.stateSelect.value });
+  });
+  bindText(els.stateDescription, "state-description", function (value) {
+    return { command: "state-description", value: value };
+  });
+  bindText(els.groupName, "groups.name", function (value) {
+    return { command: "group-name", value: value };
+  });
+  bindText(els.alias, "alias", function (value) { return { command: "alias", value: value }; });
+  bindText(els.expected, "expected", function (value) {
+    return { command: "editor-field", field: "expected", value: value };
+  });
+  bindText(els.invariants, "invariants", function (value) {
+    return { command: "editor-field", field: "invariants", value: value };
+  });
+  [
+    [els.scope, "scope"],
+    [els.breakpoint, "breakpoint"],
+    [els.priority, "priority"]
+  ].forEach(function (pair) {
+    pair[0].addEventListener("change", function () {
+      sendNow({ command: "editor-field", field: pair[1], value: pair[0].value });
+    });
+  });
+
+  if (DEMO) els.demoBadge.hidden = false;
+
+  // Connecting is the last thing the page does: in demo mode the first
+  // snapshot comes from the fixture below, so nothing may run before it exists.
+
+  /* ============================================================ demo mode ==
+     Transport only: a local reducer over the same snapshot shape. Fixture
+     data, labelled as such in the header, so design review works offline.  */
+
+  function demoTransport() {
+    var handlers = null;
+    var state = null;
+    return {
+      connect: function (next) {
+        handlers = next;
+        state = clone(DEMO_SNAPSHOT);
+        next.online();
+        next.message({ type: "state", state: clone(state) });
+        next.message({ type: "toast", tone: "info", message: "演示模式：本地样例数据，未连接页面" });
+      },
+      send: function (command) {
+        if (!state) return Promise.resolve({ ok: false, error: "演示数据尚未就绪" });
+        var result = demoApply(state, command);
+        if (result.ok) handlers.message({ type: "state", state: clone(state) });
+        return Promise.resolve(result);
+      }
+    };
+  }
+
+  function demoSelected(state) {
+    for (var index = 0; index < state.annotations.length; index += 1) {
+      if (state.annotations[index].selected === true) return state.annotations[index];
+    }
+    return null;
+  }
+
+  function demoFocus(state) {
+    var selected = demoSelected(state);
+    if (!selected) { state.editor.visible = false; return; }
+    if (state.editor.annotationId !== selected.id) {
+      state.editor.annotationId = selected.id;
+      state.editor.title = "修改说明 · " + selected.id;
+      state.editor.alias = selected.alias || "";
+      state.editor.operations = (state.editor.operations || []).map(function (operation) {
+        return { id: operation.id, label: operation.label, selected: false };
+      });
+      state.editor.expected = "";
+      state.editor.scope = "element";
+      state.editor.breakpoint = "all";
+      state.editor.priority = "must";
+      state.editor.invariants = "";
+    }
+    state.editor.visible = true;
+    state.editor.manipulationNote = selected.hasManipulation === true ? DEMO_NOTES[selected.id] || "" : "";
+  }
+
+  function demoMembers(group) {
+    return String(group.members || "").split("、").filter(function (member) { return member !== ""; });
+  }
+
+  function demoApply(state, command) {
+    var index = 0;
+    switch (command.command) {
+      case "tool":
+        if (state.mode !== "frozen") return { ok: false, error: "先冻结页面再选择标注工具" };
+        state.tool = command.tool;
+        return { ok: true };
+      case "undo":
+        if (state.canUndo !== true || state.annotations.length === 0) return { ok: false, error: "没有可撤销的标注" };
+        state.annotations.pop();
+        state.canUndo = state.annotations.length > 0;
+        demoFocus(state);
+        return { ok: true, toast: { tone: "success", message: "已撤销最后一条标注" } };
+      case "freeze":
+        if (state.mode === "frozen") { state.mode = "live"; state.status = "实时"; }
+        else { state.mode = "frozen"; state.status = "已冻结"; }
+        return { ok: true };
+      case "pick":
+        if (state.mode === "picking") { state.mode = "frozen"; state.status = "已冻结"; }
+        else { state.mode = "picking"; state.status = "选择元素"; }
+        return { ok: true };
+      case "select-state":
+        if (!state.states.some(function (item) { return item.id === command.stateId; })) return { ok: false, error: "未知状态：" + command.stateId };
+        state.states.forEach(function (item) { item.active = item.id === command.stateId; });
+        for (index = 0; index < state.states.length; index += 1) {
+          if (state.states[index].active === true) {
+            state.stateDescription = String(state.states[index].label || "").replace(/^S\d+\s*·\s*/, "");
+            break;
+          }
+        }
+        return { ok: true };
+      case "delete-state":
+        if (state.states.length === 0) return { ok: false, error: "没有可删除的冻结页" };
+        state.states = state.states.filter(function (item) { return item.active !== true; });
+        state.stateDescription = "";
+        return { ok: true, toast: { tone: "success", message: "已删除冻结页" } };
+      case "state-description":
+        state.stateDescription = command.value;
+        return { ok: true };
+      case "select-annotation":
+        if (!state.annotations.some(function (item) { return item.id === command.annotationId; })) return { ok: false, error: "未知标注：" + command.annotationId };
+        state.annotations.forEach(function (item) { item.selected = item.id === command.annotationId; });
+        demoFocus(state);
+        return { ok: true };
+      case "delete-selected":
+        if (!demoSelected(state)) return { ok: false, error: "没有选中的标注" };
+        state.annotations = state.annotations.filter(function (item) { return item.selected !== true; });
+        state.canUndo = state.annotations.length > 0;
+        state.groups.list = state.groups.list.filter(function (group) {
+          return demoMembers(group).some(function (member) {
+            return state.annotations.some(function (item) { return item.id === member; });
+          });
+        });
+        demoFocus(state);
+        return { ok: true };
+      case "alias":
+        state.editor.alias = command.value;
+        state.annotations.forEach(function (item) { if (item.selected === true) item.alias = command.value; });
+        return { ok: true };
+      case "operation":
+        state.editor.operations.forEach(function (operation) {
+          if (operation.id === command.operation) operation.selected = command.selected === true;
+        });
+        return { ok: true };
+      case "editor-field":
+        if (["expected", "scope", "breakpoint", "priority", "invariants"].indexOf(command.field) === -1) {
+          return { ok: false, error: "未知字段：" + command.field };
+        }
+        state.editor[command.field] = command.value;
+        return { ok: true };
+      case "group-name":
+        state.groups.name = command.value;
+        return { ok: true };
+      case "group-toggle-member":
+        state.groups.candidates.forEach(function (candidate) {
+          if (candidate.annotationId === command.annotationId) candidate.checked = command.checked === true;
+        });
+        return { ok: true };
+      case "group-create": {
+        var name = String(state.groups.name || "").trim();
+        if (!name) return { ok: false, error: "请先填写分组名称" };
+        var picked = state.groups.candidates.filter(function (candidate) { return candidate.checked === true; });
+        if (picked.length === 0) return { ok: false, error: "请先勾选要放进同一组的标注" };
+        var next = 1;
+        state.groups.list.forEach(function (group) {
+          var number = parseInt(String(group.id).replace(/^G/, ""), 10);
+          if (!isNaN(number) && number >= next) next = number + 1;
+        });
+        state.groups.list.push({
+          id: "G" + next,
+          name: name,
+          members: picked.map(function (candidate) { return candidate.annotationId; }).join("、"),
+          cohesion: "container"
+        });
+        state.groups.name = "";
+        state.groups.candidates.forEach(function (candidate) { candidate.checked = false; });
+        return { ok: true, toast: { tone: "success", message: "已建立分组 " + name } };
+      }
+      case "group-rename":
+        state.groups.list.forEach(function (group) { if (group.id === command.groupId) group.name = command.name; });
+        return { ok: true };
+      case "group-delete":
+        state.groups.list = state.groups.list.filter(function (group) { return group.id !== command.groupId; });
+        return { ok: true, toast: { tone: "success", message: "已删除分组 " + command.groupId } };
+      case "finish":
+        if (state.finish.disabled === true) return { ok: false, error: "当前还不能提交" };
+        state.finish = { disabled: true, label: "已提交" };
+        state.output = "演示模式：已提交，未写入任何真实产物。";
+        return { ok: true, toast: { tone: "success", message: "演示模式：已提交" } };
+      default:
+        return { ok: false, error: "演示模式不认识的指令：" + command.command };
+    }
+  }
+
+  /* ------------------------------------------------- demo fixture snapshot */
+  var DEMO_NOTES = {
+    A1: "位移 before(120,40,200,48) → after(160,40,200,48)，Δ(+40,0,0,0)"
+  };
+
+  var DEMO_SNAPSHOT = {
+    mode: "frozen",
+    status: "已冻结",
+    tool: "box",
+    tools: [
+      { id: "box", label: "框选" },
+      { id: "point", label: "点" },
+      { id: "arrow", label: "箭头" },
+      { id: "redact", label: "遮挡" },
+      { id: "move", label: "移动" },
+      { id: "resize", label: "缩放" }
+    ],
+    canUndo: true,
+    states: [{ id: "S1", label: "S1 · 点击设置后打开账户弹窗", active: true }],
+    stateDescription: "点击设置后打开账户弹窗",
+    annotations: [
+      { id: "A1", alias: "UpgradeButton", label: "框选 · A1", kind: "box", selected: true, hasManipulation: true },
+      { id: "A2", alias: "", label: "点 · A2", kind: "point", selected: false, hasManipulation: false }
+    ],
+    editor: {
+      visible: true,
+      annotationId: "A1",
+      title: "修改说明 · A1",
+      alias: "UpgradeButton",
+      operations: [
+        { id: "layout", label: "布局", selected: true },
+        { id: "style", label: "样式", selected: false },
+        { id: "content", label: "内容", selected: false },
+        { id: "interaction", label: "交互", selected: false },
+        { id: "add", label: "新增", selected: false },
+        { id: "remove", label: "删除", selected: false },
+        { id: "fix", label: "问题修复", selected: false }
+      ],
+      expected: "",
+      expectedPlaceholder: "例如：升级按钮移到标题右侧，宽度不变",
+      scope: "element",
+      breakpoint: "all",
+      priority: "must",
+      invariants: "",
+      manipulationNote: "位移 before(120,40,200,48) → after(160,40,200,48)，Δ(+40,0,0,0)"
+    },
+    groups: {
+      name: "",
+      candidates: [
+        { annotationId: "A1", label: "A1 · 框选", checked: true },
+        { annotationId: "A2", label: "A2 · 点", checked: false }
+      ],
+      list: [{ id: "G1", name: "主操作区", members: "A1、A2", cohesion: "container" }]
+    },
+    finish: { disabled: false, label: "完成并生成" },
+    output: ""
+  };
+
+  transport.connect({
+    online: function () { connected = true; renderStrips(); },
+    offline: function () { connected = false; renderStrips(); },
+    message: onMessage
+  });
+})();
+</script>
+</body>
+</html>

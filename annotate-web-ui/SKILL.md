@@ -92,6 +92,13 @@ The random loopback server starts and stops with the annotation controller.
 `--keep-browser` is unavailable in static mode because the page server does not
 outlive the session.
 
+On macOS with the Xcode command-line tools, add `--float` to show the same
+controls in a floating window that stays above everything else; the in-page
+panel then starts folded away, so it never covers the element being annotated.
+The session prints `SYMBUI_FLOAT_PANEL=<url>` — any browser can open that URL
+instead — and `SYMBUI_PANEL_WINDOW=ready` once the native window is up. Without
+the toolchain nothing breaks: the session keeps its in-page panel.
+
 Use a PTY because the controller stays active while the user annotates. The
 default output location is:
 

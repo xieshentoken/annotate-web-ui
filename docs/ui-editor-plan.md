@@ -653,3 +653,48 @@ grabPx = clamp(shortSide * 0.6, 8, 24)
 **测试**：新增 `tests/panel-pin.test.mjs`（5 个用例，真实 Chrome + 真实鼠标事件）：默认钉扎且页面移动/按下都不收起、取消钉扎后回到页面收起且原被盖住的点恢复可点、输入框有焦点时收起被抑制而页面按下立即收起且已输入文字不丢、`+` 与「钉扎」两条显式展开路径、未钉扎下画完标注自动展开并把光标放进说明框。测试套件 183 / **123 通过** / 0 失败 / 60 跳过。
 
 **没做的事**：面板仍在页内，只是不再常驻遮挡；真正的"悬浮于桌面"（B/D）未做，`app.pinned` 也**不做持久化**（注入代码禁止读写 storage），每次会话默认钉扎。
+
+### 第七轮：macOS 原生悬浮窗（D 方案）
+
+**目标**：把控制面板从被标注的网页里搬到一个**原生的、始终浮在其他窗口之上**的 macOS 窗口，让浏览器视口完整还给标注。
+
+**为什么这一轮能做成 A 做不到的事**：A（钉扎/自动收起）只是让面板"不常驻遮挡"，面板仍在页内、仍受页面坐标系约束。悬浮窗要成立，面板必须变成**独立表面**，于是需要一条页面 ↔ 面板的数据通道。
+
+**架构（四块）**：
+
+| 部件 | 文件 | 职责 |
+|---|---|---|
+| 页面侧指令面 | `assets/overlay.js`（新增约 230 行） | `__SYMBUI_PANEL_STATE__()` 导出可序列化快照；`__SYMBUI_PANEL_COMMAND__(cmd)` 把 18 条指令分发到**页内面板同一批函数**（`chooseTool`/`toggleFreeze`/`setOperation`/`updateSelectedIntent`/`createGroup`/`finishSession`…） |
+| 中继 | `scripts/panel-host.mjs`（新，239 行） | loopback HTTP：`/panel.html` 提供面板页、`/events` 以 SSE 推快照、`/command` 收指令转 CDP、`/hello` 记录面板已加载 |
+| 面板页面 | `assets/floating-panel.html`（新，1636 行，自包含） | 由快照渲染的面板 UI，`?demo=1` 可离线预览 |
+| 原生壳 | `scripts/native/panel.swift` + `build-panel.mjs`（新） | `NSPanel`（`level = .floating`、`canJoinAllSpaces`、accessory 无 Dock 图标）+ `WKWebView` 加载中继页面；`swiftc` 按需编译，零下载 |
+
+**关键取舍**：
+
+- **页面侧仍然零网络请求**：面板 ↔ Node 走 SSE/HTTP，Node ↔ 页面走会话已有的 CDP 与 `__symbuiNative` binding。注入代码的不变量没被破坏。
+- **中继对网页不可用**：只绑 `127.0.0.1`，每条路由都要会话 token，且**从不发 CORS 头**——网页即使猜到端口也读不到响应、发不出 JSON POST。
+- **单一状态源**：指令走页内面板原有的函数，所以两个表面不会各存一份 intent。`toggleOperation` 与新增的 `setOperation` 合并成一条路径。
+- **状态推送是 250ms 轮询 + 变更去重**（仅在面板已连接时轮询），不是改 overlay 的每条渲染路径——用最小侵入换取"页面上拖一下，悬浮窗 250ms 内跟上"。
+- **`--float` 时页内面板默认收起**（`config.floatPanel` → `pinned = false`）：同一批控件已经在桌面上，页内那份只需不挡路。
+- **页内 toast 同步到悬浮窗**：`showToast` 现在额外发 `panel-toast`，由中继转成面板的 toast。否则"完成并生成"被闸门拦下时，用户盯着的那块屏幕会毫无反应。
+
+**实测（生产路径，非测试替身）**：
+
+```
+SYMBUI_FLOAT_PANEL=http://127.0.0.1:58272/panel.html?token=2372c…fb84
+SYMBUI_PANEL_HELLO=1
+SYMBUI_PANEL_READY http://127.0.0.1:58272/panel.html?token=2372c…fb84 level=3
+SYMBUI_PANEL_WINDOW=ready
+```
+
+`level=3` 即 `NSFloatingWindowLevel` 裸值；`PANEL_HELLO=1` 证明 `WKWebView` 不只是取回了页面，而是**执行了页面里的 JS**。会话结束时窗口与浏览器一起退出（`pkill` 后 `pgrep symbui-panel` 为空）。loopback 明文 HTTP 未被 ATS 拦截，无需例外配置。
+
+**测试**：新增 `tests/floating-panel.test.mjs`（3 个用例，全绿）：中继无 token / 错 token 一律 403 且无 CORS 头、未知指令返回 `{ok:false}`；面板页作为**真正的第二视图**驱动页面（面板点冻结 → 页面冻结；页面拖框 → 面板 15s 内自行出现该标注；面板点选 → 页面选中；点「完成并生成」→ 页面的拒绝原文出现在面板 toast；在面板打字 → 写进页面的 intent，且回传快照不会吃掉已输入的文字）；原生窗口加载真面板（`level=3` + `/hello` 到达 + SIGTERM 干净退出）。
+
+**踩到的三个坑（都在测试里留下了断言）**：
+
+1. `/json/new?url=<编码后的完整 URL>` 会丢掉 `?token=`，面板页因此永远"连接中"——测试改为先开空白页再 `Page.navigate` 到确切 URL，并断言 `location.search` 里确实有 token。
+2. 被标注页一旦退到后台就**拿不到帧**，而 `requestCapture()` 要等两次 `requestAnimationFrame`，于是"点冻结没反应"。测试改为给面板页**单独一个浏览器实例**（也更贴近现实：悬浮窗本来就是独立窗口）。
+3. 测试的 `waitFor(client, expr, "说明文字")` 把说明文字当成了超时毫秒数 → 截止时间 `NaN` → 条件明明成立却立刻失败。helper 的第三个参数改为消息。
+
+**没做的事**：面板页与页内面板是**两套 DOM 实现**（同一个设计语言、同一份快照契约，但渲染代码不共享）；`--float` 只在 macOS 生效，其他平台只打印 `SYMBUI_FLOAT_PANEL` 让人用浏览器打开；窗口位置记忆用 `UserDefaults`，不随会话走。

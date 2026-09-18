@@ -67,6 +67,21 @@ function revisionStateMap(revision) {
   return map;
 }
 
+/* A revision with no inventory cannot be diffed. `normalizeSession` synthesizes
+ * exactly that — a baseline whose `inventory` is `null` — for a session saved
+ * before `start-session` recorded one, and the failure used to surface as a
+ * TypeError from `path.join(dir, null)`, which reads as a broken tool rather
+ * than as a session that is too old to review. */
+async function loadInventoryFor(sessionDir, revision) {
+  if (!revision?.inventory) {
+    throw new Error(
+      `revision ${revision?.id} has no element inventory, so there is nothing to compare against. ` +
+        "Sessions captured before the baseline inventory was recorded cannot be reviewed; run start-session.mjs again for this page.",
+    );
+  }
+  return readJson(path.join(sessionDir, revision.inventory));
+}
+
 async function buildPreview({ session, sessionDir, round, fromRevision, toRevision, diff, verdicts, config }) {
   const roundDir = path.join(sessionDir, "rounds", round.id);
   const reviewDir = path.join(roundDir, "review");
@@ -75,8 +90,8 @@ async function buildPreview({ session, sessionDir, round, fromRevision, toRevisi
 
   const fromStates = revisionStateMap(fromRevision);
   const toStates = revisionStateMap(toRevision);
-  const fromInventory = await readJson(path.join(sessionDir, fromRevision.inventory));
-  const toInventory = await readJson(path.join(sessionDir, toRevision.inventory));
+  const fromInventory = await loadInventoryFor(sessionDir, fromRevision);
+  const toInventory = await loadInventoryFor(sessionDir, toRevision);
 
   const states = [];
   for (const stateDiff of diff.states) {
@@ -198,8 +213,8 @@ async function main() {
     throw new Error("没有新的 revision，抓取可能失败了。");
   }
 
-  const fromInventory = await readJson(path.join(sessionDir, fromRevision.inventory));
-  const toInventory = await readJson(path.join(sessionDir, toRevision.inventory));
+  const fromInventory = await loadInventoryFor(sessionDir, fromRevision);
+  const toInventory = await loadInventoryFor(sessionDir, toRevision);
 
   const annotations = pending
     ? pending.annotations || []

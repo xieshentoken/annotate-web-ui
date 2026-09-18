@@ -93,10 +93,11 @@
     panelDrag: null,
     // Pinned: the panel stays fully open, exactly as it always has. Unpinned:
     // it folds to its header as soon as the pointer goes back to the page, so
-    // the panel never covers the element being annotated.
-    pinned: true,
+    // the panel never covers the element being annotated. A session with a
+    // floating panel starts unpinned: the same controls are already on the
+    // desktop, and the in-page copy only needs to stay out of the way.
+    pinned: config.floatPanel !== true,
     panelCollapseTimer: null,
-    host: null,
     shadow: null,
     ui: {},
   };
@@ -637,6 +638,10 @@
     toast.classList.add("visible");
     clearTimeout(showToast.timer);
     showToast.timer = setTimeout(() => toast.classList.remove("visible"), 3200);
+    // Everything the user is told in-page is also told to the floating panel:
+    // a gate that refuses 完成, or a group that cannot be built, has to reach
+    // whichever surface the user is actually looking at.
+    send("panel-toast", { message: String(message), tone });
   }
 
   function setCaptureUiHidden(hidden) {
@@ -1214,24 +1219,8 @@
   }
 
   function toggleOperation(value) {
-    const annotation = selectedAnnotation();
-    if (
-      !annotation ||
-      annotation.kind === "redact" ||
-      !CHANGE_OPERATION_BY_VALUE.has(value)
-    ) {
-      return;
-    }
-    const operations = normalizedOperations(annotation.intent);
-    const next = operations.includes(value)
-      ? operations.filter((operation) => operation !== value)
-      : [...operations, value];
-    annotation.intent = {
-      ...annotation.intent,
-      operations: next,
-    };
-    renderAnnotationList();
-    renderEditor();
+    const operations = normalizedOperations(selectedAnnotation()?.intent);
+    setOperation(value, !operations.includes(value));
   }
 
   function createAnnotation(kind, geometry, target = null) {
@@ -2013,6 +2002,263 @@
   }
 
   window.__SYMBUI_RECEIVE__ = receive;
+
+  /* ------------------------------------------------- floating panel bridge */
+  //
+  // A session can show its controls in a native macOS window instead of (as
+  // well as) inside the page. That window is a second view of this one session:
+  // it renders a snapshot of the state below and sends commands back through
+  // the very same functions the in-page panel calls, so the two surfaces cannot
+  // drift into two different copies of the same annotation.
+  //
+  // Nothing here touches the network. The relay (scripts/panel-host.mjs) owns
+  // the HTTP surface, and it reaches this page through the CDP connection the
+  // session already holds — the same binding and Runtime.evaluate path the
+  // capture and finish flows use.
+
+  function panelManipulationNote(annotation) {
+    const manipulation = annotation?.manipulation;
+    if (!manipulation) return "";
+    const { before, after, delta } = manipulation;
+    return (
+      `${manipulation.mode === "move" ? "移动" : "缩放"}：` +
+      `${before.x},${before.y} ${before.width}×${before.height} → ` +
+      `${after.x},${after.y} ${after.width}×${after.height}` +
+      `（Δ ${delta.x},${delta.y} ${delta.width}×${delta.height} px）`
+    );
+  }
+
+  function panelSnapshot() {
+    const current = activeState();
+    const annotations = current ? annotationsForState(current.id) : [];
+    const annotation = selectedAnnotation();
+    const editing = Boolean(annotation && annotation.kind !== "redact");
+    const operations = editing ? normalizedOperations(annotation.intent) : [];
+    const members = new Set(app.groupSelection);
+    return {
+      mode: app.mode,
+      status: app.ui.status?.textContent || "",
+      tool: app.tool,
+      // Read from the real buttons so the floating panel lists exactly the
+      // tools this build ships, in the order the in-page panel shows them.
+      tools: (app.ui.toolButtons || []).map((button) => ({
+        id: button.dataset.tool,
+        label: (button.textContent || "").trim(),
+      })),
+      canUndo: app.annotations.length > 0,
+      states: app.states.map((state) => ({
+        id: state.id,
+        label: state.description
+          ? `${state.id} · ${shortText(state.description, 40)}`
+          : state.id,
+        active: state.id === app.activeStateId,
+      })),
+      stateDescription: current?.description || "",
+      annotations: annotations.map((item) => ({
+        id: item.id,
+        alias: item.alias || "",
+        kind: item.kind,
+        label: annotationLabel(item),
+        selected: item.id === app.selectedId,
+        hasManipulation: Boolean(item.manipulation),
+      })),
+      editor: {
+        visible: editing,
+        annotationId: annotation?.id || null,
+        title: annotation ? `${annotation.id} 修改说明` : "",
+        alias: annotation?.alias || "",
+        operations: CHANGE_OPERATIONS.map((operation) => ({
+          id: operation.value,
+          label: operation.label,
+          help: operation.help,
+          selected: operations.includes(operation.value),
+        })),
+        expected: editing ? annotation.intent.expected : "",
+        expectedPlaceholder: expectedPlaceholder(operations),
+        scope: editing ? annotation.intent.scope : "element",
+        breakpoint: editing ? annotation.intent.breakpoint : "all",
+        priority: editing ? annotation.intent.priority : "must",
+        invariants: editing ? annotation.intent.invariants : "",
+        manipulationNote: panelManipulationNote(annotation),
+      },
+      groups: {
+        name: app.ui.groupName?.value || "",
+        candidates: annotations
+          .filter((item) => item.kind !== "redact")
+          .map((item) => ({
+            annotationId: item.id,
+            label: item.alias ? `${item.id} ${item.alias}` : item.id,
+            checked: members.has(item.id),
+          })),
+        list: app.groups.map((group) => ({
+          id: group.id,
+          name: group.name,
+          members: group.annotationIds.join("、"),
+          cohesion: group.cohesion || "mixed",
+        })),
+      },
+      finish: {
+        disabled: Boolean(app.ui.finish?.disabled),
+        label: (app.ui.finish?.textContent || "").trim() || "完成并生成",
+      },
+      output: (app.ui.output?.textContent || "").trim(),
+    };
+  }
+
+  function panelSelectAnnotation(id) {
+    const annotation = app.annotations.find((item) => item.id === id);
+    if (!annotation) return false;
+    app.selectedId = annotation.id;
+    renderAnnotationList();
+    renderAnnotations();
+    renderEditor();
+    return true;
+  }
+
+  // The in-page chips toggle; a remote surface sends the state it wants. Both
+  // land here so an operation is added or removed by one code path.
+  function setOperation(value, selected) {
+    const annotation = selectedAnnotation();
+    if (
+      !annotation ||
+      annotation.kind === "redact" ||
+      !CHANGE_OPERATION_BY_VALUE.has(value)
+    ) {
+      return false;
+    }
+    const operations = normalizedOperations(annotation.intent);
+    const next = selected
+      ? [...new Set([...operations, value])]
+      : operations.filter((operation) => operation !== value);
+    annotation.intent = { ...annotation.intent, operations: next };
+    renderAnnotationList();
+    renderEditor();
+    return true;
+  }
+
+  // An intent is edited in one place: the panel's own fields. A command writes
+  // that field and runs the same update path the keystroke would have run.
+  function panelSetEditorField(field, value) {
+    const target = app.ui[field];
+    if (!target || typeof target.value !== "string") return false;
+    if (!["expected", "scope", "breakpoint", "priority", "invariants"].includes(field)) {
+      return false;
+    }
+    target.value = String(value ?? "");
+    updateSelectedIntent();
+    return true;
+  }
+
+  function runPanelCommand(command) {
+    const name = command?.command;
+    const fail = (error) => ({ ok: false, error: String(error) });
+    try {
+      switch (name) {
+        case "tool": {
+          const known = (app.ui.toolButtons || []).some(
+            (button) => button.dataset.tool === command.tool,
+          );
+          if (!known) return fail(`未知工具 ${command.tool}`);
+          chooseTool(command.tool);
+          return { ok: true };
+        }
+        case "undo":
+          undo();
+          return { ok: true };
+        case "freeze":
+          toggleFreeze();
+          return { ok: true };
+        case "pick":
+          startPicking();
+          return { ok: true };
+        case "select-state":
+          if (!app.states.some((state) => state.id === command.stateId)) {
+            return fail(`未知冻结页 ${command.stateId}`);
+          }
+          selectState(command.stateId);
+          setMode("frozen");
+          return { ok: true };
+        case "delete-state":
+          deleteActiveState();
+          return { ok: true };
+        case "state-description": {
+          const current = activeState();
+          if (!current) return fail("还没有冻结页");
+          current.description = String(command.value ?? "");
+          updateStateSelector();
+          return { ok: true };
+        }
+        case "select-annotation":
+          return panelSelectAnnotation(command.annotationId)
+            ? { ok: true }
+            : fail(`未知标注 ${command.annotationId}`);
+        case "delete-selected":
+          deleteSelected();
+          return { ok: true };
+        case "alias": {
+          const annotation = selectedAnnotation();
+          if (!annotation) return fail("先选中一条标注");
+          const value = String(command.value ?? "").trim().slice(0, 64);
+          if (value) annotation.alias = value;
+          else delete annotation.alias;
+          renderAnnotationList();
+          return { ok: true };
+        }
+        case "operation":
+          return setOperation(command.operation, Boolean(command.selected))
+            ? { ok: true }
+            : fail(`无法设置 ${command.operation}`);
+        case "editor-field":
+          return panelSetEditorField(command.field, command.value)
+            ? { ok: true }
+            : fail(`未知字段 ${command.field}`);
+        case "group-name":
+          app.ui.groupName.value = String(command.value ?? "").slice(0, 64);
+          return { ok: true };
+        case "group-toggle-member": {
+          const id = command.annotationId;
+          if (!app.annotations.some((item) => item.id === id)) {
+            return fail(`未知标注 ${id}`);
+          }
+          app.groupSelection = command.checked
+            ? [...new Set([...app.groupSelection, id])]
+            : app.groupSelection.filter((item) => item !== id);
+          renderGroups();
+          return { ok: true };
+        }
+        case "group-create":
+          // Refusals reach the user as a toast on both surfaces; the command
+          // itself only reports whether the call was understood.
+          createGroup();
+          return { ok: true };
+        case "group-rename": {
+          const group = app.groups.find((item) => item.id === command.groupId);
+          if (!group) return fail(`未知分组 ${command.groupId}`);
+          group.name = String(command.name ?? "").slice(0, 64);
+          renderGroupList();
+          return { ok: true };
+        }
+        case "group-delete":
+          if (!app.groups.some((group) => group.id === command.groupId)) {
+            return fail(`未知分组 ${command.groupId}`);
+          }
+          deleteGroup(command.groupId);
+          return { ok: true };
+        case "finish":
+          // Async: the gate, the toasts and the artifact paths all travel back
+          // through the same channels the in-page button uses.
+          void finishSession();
+          return { ok: true };
+        default:
+          return fail(`未知指令 ${String(name)}`);
+      }
+    } catch (error) {
+      return fail(error?.message || String(error));
+    }
+  }
+
+  window.__SYMBUI_PANEL_STATE__ = () => panelSnapshot();
+  window.__SYMBUI_PANEL_COMMAND__ = (command) => runPanelCommand(command);
 
   function installUi() {
     if (app.host) return;
@@ -2873,6 +3119,10 @@
       requestAnimationFrame(clampCurrentPanel);
     });
 
+    // The markup ships pinned; a session with a floating panel starts unpinned,
+    // so the glyph and aria state have to come from the state, not the HTML.
+    app.ui.pinToggle.setAttribute("aria-pressed", String(app.pinned));
+    if (!app.pinned) app.ui.panel.classList.add("collapsed");
     app.ui.pinToggle.addEventListener("click", () => {
       app.pinned = !app.pinned;
       app.ui.pinToggle.setAttribute("aria-pressed", String(app.pinned));
