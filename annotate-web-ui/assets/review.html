@@ -5,88 +5,159 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SymbUI 修改对比与复审</title>
 <style>
+  /* --------------------------------------------------------------- tokens
+     Design contract — Dia Browser visual language ("blackroom gallery meets
+     editorial broadsheet"). Variable names and values are copied verbatim from
+     the first-pass overlay (overlay.js shadow-root) so the two UIs cannot
+     drift apart. No network fonts, no external resources: this page is only
+     ever served on loopback.
+     Do:    1px solid ink hairlines for every edge, radius only from
+            {12, 20, 24, 9999, 0, 50%}, mono 13px/1.3px uppercase eyebrows,
+            0.2s ease on color/background-color/border-color/opacity only,
+            one spectrum gradient (top strip).
+     Don't: chromatic fills (only lime wash #f2fcb3 and saffron #ffdc5c),
+            hover transforms, shadows on flat in-flow cards, weight 600-700.
+     --------------------------------------------------------------------- */
   :root {
-    --bg: #f6f6f4;
-    --surface: #ffffff;
-    --surface-2: #f1efe8;
-    --border: rgba(0,0,0,.14);
-    --border-strong: rgba(0,0,0,.3);
-    --text: #1c1c1a;
-    --text-2: #5f5e5a;
-    --text-3: #888780;
-    --accent: #185fa5;
-    --accent-soft: #e6f1fb;
-    --ok: #3b6d11;
-    --ok-soft: #eaf3de;
-    --warn: #854f0b;
-    --warn-soft: #faeeda;
-    --bad: #a32d2d;
-    --bad-soft: #fcebeb;
-    --add: #3b6d11;
-    --remove: #a32d2d;
-    --moved: #185fa5;
-    --resized: #534ab7;
-    --restyled: #993c1d;
-    --radius: 8px;
-    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bone: #f8f8f8;
+    --paper: #ffffff;
+    --linen: #efefef;
+    --ink: #000000;
+    --carbon: #636363;
+    --slate: #888888;
+    --silver: #c6c6c6;
+    --graphite: #575757;
+    --void: #020204;
+    --wash: #f2fcb3;
+    --saffron: #ffdc5c;
+    --radius-card: 12px;
+    --radius-cta: 20px;
+    --radius-panel: 24px;
+    --radius-pill: 9999px;
+    --hairline: 1px solid var(--ink);
+    --shadow-sm: rgba(0,0,0,.06) 0px 2px 8px 0px, rgba(0,0,0,.04) 0px 0px 2px 0px;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --ease: 0.2s ease;
+    --spectrum: linear-gradient(270deg, #FD02F5, #FA3D1D 15.94%, #FFB005 42.76%, #E1E1FE 72.48%, #0358F7 100.02%, #340B05 150.75%);
+    /* The six diff-cluster marks stay inside the palette: four achromatic
+       steps plus the two permitted washes, separated by stroke rhythm
+       (.cluster.added … .cluster.reordered) so near grays stay tellable. */
+    --kind-added: #000000;
+    --kind-removed: #575757;
+    --kind-moved: #888888;
+    --kind-resized: #c6c6c6;
+    --kind-restyled: #ffdc5c;
+    --kind-reordered: #f2fcb3;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    font: 400 13px/1.5 var(--font);
-    color: var(--text);
-    background: var(--bg);
+    font: 400 16px/1.5 var(--font-sans);
+    color: var(--ink);
+    background: var(--bone);
     overflow: hidden;
   }
-  button, input, textarea, select { font: inherit; color: inherit; }
+  /* the single permitted spectrum gradient, as a page-top hairline rail */
+  body::before {
+    content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px;
+    background: var(--spectrum); pointer-events: none; z-index: 60;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; font-family: var(--font-sans); }
+  button, input, textarea, select {
+    transition:
+      color var(--ease),
+      background-color var(--ease),
+      border-color var(--ease),
+      opacity var(--ease);
+  }
+  button { cursor: pointer; }
+  button:disabled, input:disabled, select:disabled { cursor: not-allowed; opacity: .45; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible,
+  [role="tab"]:focus-visible, .card.clickable:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+  ::placeholder { color: var(--slate); opacity: 1; }
+
   .app { display: flex; flex-direction: column; height: 100%; }
 
+  /* ------------------------------------------------------------- chrome */
   .topbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; background: var(--surface);
-    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--paper);
+    border-bottom: var(--hairline);
   }
-  .brand { font-weight: 500; font-size: 14px; margin-right: 4px; }
-  .meta { color: var(--text-3); font-size: 12px; }
+  .brand {
+    display: inline-flex; align-items: center;
+    padding: 8px 12px; margin-right: 5px;
+    border-radius: var(--radius-card);
+    background: var(--ink); color: var(--wash);
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.3;
+    letter-spacing: 1.3px; white-space: nowrap;
+  }
+  .meta {
+    color: var(--carbon); font-family: var(--font-mono);
+    font-size: 13px; line-height: 1.3; letter-spacing: .6px;
+  }
   .spacer { flex: 1; }
 
-  .seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  /* segmented controls: pill rail, selected = lime wash, never a transform */
+  .seg { display: flex; gap: 8px; flex-wrap: wrap; }
   .seg button {
-    border: 0; background: var(--surface); padding: 5px 10px;
-    cursor: pointer; font-size: 12px; color: var(--text-2);
-    border-right: 1px solid var(--border);
+    min-height: 32px; padding: 5px 14px;
+    border: var(--hairline); border-radius: var(--radius-pill);
+    background: var(--linen); color: var(--ink);
+    font-size: 14px; line-height: 1.25; white-space: nowrap;
   }
-  .seg button:last-child { border-right: 0; }
-  .seg button:hover { background: var(--surface-2); }
-  .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+  .seg button:hover { background: var(--paper); }
+  .seg button[aria-pressed="true"] { background: var(--wash); border-color: var(--ink); }
 
   .btn {
-    border: 1px solid var(--border); background: var(--surface);
-    padding: 5px 10px; border-radius: var(--radius); cursor: pointer;
-    font-size: 12px; color: var(--text-2);
+    min-height: 32px; padding: 5px 14px;
+    border: var(--hairline); border-radius: var(--radius-pill);
+    background: var(--linen); color: var(--ink);
+    font-size: 14px; line-height: 1.25; white-space: nowrap;
   }
-  .btn:hover { background: var(--surface-2); }
-  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn.primary:hover { filter: brightness(1.08); }
-  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn:hover { background: var(--paper); }
+  .btn.primary {
+    border-radius: var(--radius-cta);
+    background: var(--ink); color: var(--paper);
+    font-weight: 650;
+  }
+  .btn.primary:hover { background: var(--graphite); }
+  .btn:disabled {
+    background: var(--linen); color: var(--slate); border-color: var(--silver); opacity: 1;
+  }
+  #exportBtn { font-size: 16px; padding: 8px 20px; }
 
   main { display: flex; flex: 1; min-height: 0; }
 
   .stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .toolbar {
-    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 16px; background: var(--bone);
+    border-bottom: var(--hairline);
   }
-  .viewport { flex: 1; overflow: auto; background: var(--surface-2); padding: 16px; }
-  .canvas-row { display: flex; gap: 16px; align-items: flex-start; justify-content: center; min-width: min-content; }
-  .pane-wrap { display: flex; flex-direction: column; gap: 6px; }
-  .pane-label { font-size: 11px; color: var(--text-3); text-align: center; }
+  /* padding/gap stay at the values scaleFor() assumes (32px inside, 16px gap) */
+  .viewport {
+    flex: 1; overflow: auto; background: var(--linen); padding: 16px;
+    scrollbar-color: var(--slate) transparent;
+  }
+  .canvas-row {
+    display: flex; gap: 16px; align-items: flex-start; justify-content: center;
+    min-width: min-content;
+  }
+  .pane-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .pane-label {
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.3;
+    letter-spacing: 1.3px; text-transform: uppercase;
+    color: var(--carbon); text-align: center;
+  }
   .pane {
-    position: relative; background: var(--surface);
-    border: 1px solid var(--border); border-radius: var(--radius);
+    position: relative; background: var(--paper);
+    border: var(--hairline); border-radius: var(--radius-card);
+    box-shadow: var(--shadow-sm);
     overflow: hidden; flex: none;
   }
   .pane img { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
@@ -94,13 +165,13 @@
   .pane .ovl { position: absolute; inset: 0; width: 100%; height: 100%; }
   .pane.hidden { display: none; }
   .pane .divider {
-    position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent);
+    position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink);
     cursor: ew-resize; z-index: 5; display: none;
   }
   .pane .divider::after {
     content: ""; position: absolute; top: 50%; left: 50%; width: 26px; height: 26px;
     transform: translate(-50%, -50%); border-radius: 50%;
-    background: var(--accent); border: 2px solid #fff;
+    background: var(--saffron); border: 1px solid var(--ink);
   }
   .pane.mode-slider .divider { display: block; }
   .pane.mode-slider .img-before { clip-path: inset(0 calc(100% - var(--split, 50%)) 0 0); }
@@ -111,91 +182,161 @@
   .pane.mode-heatmap .img-before { display: none; }
   .pane.mode-heatmap .heat { display: block; }
   .pane.mode-heatmap .img-after { opacity: .45; }
-  .pane .band { fill: rgba(24,95,165,.12); stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; }
-  .pane .hit { fill: rgba(24,95,165,.10); stroke: var(--accent); stroke-width: 1; }
-  .pane .sel { fill: rgba(24,95,165,.16); stroke: var(--accent); stroke-width: 1.5; }
-  .pane .ghost { fill: rgba(83,74,183,.18); stroke: #534ab7; stroke-width: 1.5; stroke-dasharray: 5 3; }
-  .pane .handle { fill: #fff; stroke: var(--accent); stroke-width: 1.5; cursor: nwse-resize; }
+
+  /* canvas marks: ink stroke + lime wash for selection, saffron while a
+     gesture is in flight. No blue, no purple, no drop shadow.              */
+  .pane .band { fill: rgba(255,220,92,.35); stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .pane .hit { fill: rgba(0,0,0,.05); stroke: var(--ink); stroke-width: 1; }
+  .pane .sel { fill: rgba(242,252,179,.45); stroke: var(--ink); stroke-width: 1.5; }
+  .pane .ghost { fill: rgba(255,220,92,.35); stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .pane .handle { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; cursor: nwse-resize; }
   .pane .handle.n, .pane .handle.s { cursor: ns-resize; }
   .pane .handle.e, .pane .handle.w { cursor: ew-resize; }
-  .pane .anno { fill: none; stroke: var(--bad); stroke-width: 2; }
-  .pane .anno-dot { fill: var(--bad); }
+  /* User annotations take stroke/fill from the JS mark colour, so the active one
+     can flip to saffron; CSS carries geometry and the label typography. */
+  .pane .anno { fill: none; stroke-width: 2; }
+  .pane .anno-dot { stroke: none; }
   .pane .anno-redact { fill: rgba(0,0,0,.55); }
   .pane .anno-label {
-    font: 500 11px var(--font); fill: #fff;
+    font: 400 11px var(--font-mono); letter-spacing: .6px; fill: var(--wash);
   }
-  .pane .anno-label-bg { fill: var(--bad); }
-  .pane .cluster { fill: none; stroke-width: 1.5; stroke-dasharray: 5 4; }
-  .pane.cluster-off .cluster { display: none; }
+  .pane .anno-label.active { fill: var(--ink); }
+  .pane .anno-label-bg { stroke: none; }
+  /* ink underlay keeps the two wash-colored marks readable on light pixels */
+  .pane .cluster-halo { fill: none; stroke: var(--ink); stroke-width: 3; }
+  .pane .cluster { fill: none; stroke-width: 1.5; }
+  .pane .cluster.added { stroke-dasharray: none; }
+  .pane .cluster.removed { stroke-dasharray: 6 4; }
+  .pane .cluster.moved { stroke-dasharray: 2 3; }
+  .pane .cluster.resized { stroke-dasharray: 8 3 2 3; }
+  .pane .cluster.restyled { stroke-dasharray: 1 3; }
+  .pane .cluster.reordered { stroke-dasharray: 10 4 2 4; }
+  .pane.cluster-off .cluster,
+  .pane.cluster-off .cluster-halo { display: none; }
 
+  /* ------------------------------------------------------------ sidebar */
   .sidebar {
-    width: 380px; flex: none; border-left: 1px solid var(--border);
-    background: var(--surface); display: flex; flex-direction: column; min-height: 0;
+    width: 380px; flex: none; border-left: var(--hairline);
+    background: var(--paper); display: flex; flex-direction: column; min-height: 0;
   }
-  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tabs { display: flex; background: var(--bone); border-bottom: var(--hairline); }
   .tabs button {
-    flex: 1; border: 0; background: var(--surface); padding: 9px 6px;
-    cursor: pointer; font-size: 12px; color: var(--text-2);
-    border-bottom: 2px solid transparent;
+    flex: 1; min-width: 0; min-height: 40px; padding: 10px 5px;
+    border: 0; border-bottom: 2px solid transparent; background: transparent;
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.3;
+    letter-spacing: 1.3px; text-transform: uppercase;
+    color: var(--carbon); white-space: nowrap;
   }
-  .tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
-  .tab-panel { flex: 1; overflow: auto; padding: 10px; display: none; }
+  .tabs button:hover { background: var(--linen); color: var(--ink); }
+  .tabs button[aria-selected="true"] {
+    background: var(--paper); color: var(--ink); border-bottom-color: var(--ink);
+  }
+  .tab-panel {
+    flex: 1; overflow: auto; padding: 12px; display: none;
+    scrollbar-color: var(--slate) transparent;
+  }
   .tab-panel.active { display: block; }
 
   .card {
-    border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 9px 10px; margin-bottom: 8px; background: var(--surface);
+    border: var(--hairline); border-radius: var(--radius-card);
+    padding: 12px; margin-bottom: 8px; background: var(--paper);
   }
   .card.clickable { cursor: pointer; }
-  .card.clickable:hover { background: var(--surface-2); }
-  .card.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-  .card h4 { margin: 0 0 5px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
-  .card p { margin: 3px 0 0; color: var(--text-2); font-size: 12px; }
-  .muted { color: var(--text-3); font-size: 12px; }
-  .empty { color: var(--text-3); font-size: 12px; padding: 14px 4px; text-align: center; }
+  .card.clickable:hover { background: var(--linen); }
+  .card.active { background: var(--wash); box-shadow: var(--shadow-sm); }
+  .card h4 {
+    margin: 0 0 5px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+    font-size: 16px; font-weight: 650; line-height: 1.3; letter-spacing: -.2px;
+    word-break: break-word;
+  }
+  /* .card p is more specific than a lone utility class, so the utilities are
+     spelled out for the card context too — otherwise mono/13px never land. */
+  .card p { margin: 5px 0 0; color: var(--carbon); font-size: 16px; line-height: 1.5; }
+  .kv, .card p.kv {
+    margin: 5px 0 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+    color: var(--carbon); word-break: break-all;
+  }
+  .muted, .card p.muted { color: var(--slate); font-size: 13px; line-height: 1.5; }
+  .empty {
+    padding: 16px 12px; border: 1px dashed var(--silver); border-radius: var(--radius-card);
+    color: var(--slate); text-align: center; font-size: 16px; line-height: 1.5;
+  }
+  .hint { margin: 0 0 8px; color: var(--carbon); font-size: 13px; line-height: 1.5; }
 
+  /* pills. The leading dot carries the diff-kind color from --kind. */
   .tag {
-    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px;
-    background: var(--surface-2); color: var(--text-2); white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 12px; border: 1px solid var(--silver);
+    border-radius: var(--radius-pill);
+    background: var(--linen); color: var(--ink);
+    font-size: 13px; font-weight: 400; line-height: 1.4; letter-spacing: normal; white-space: nowrap;
   }
-  .tag.added { background: var(--ok-soft); color: var(--ok); }
-  .tag.removed { background: var(--bad-soft); color: var(--bad); }
-  .tag.moved { background: var(--accent-soft); color: var(--accent); }
-  .tag.resized { background: #eeedfe; color: #534ab7; }
-  .tag.restyled { background: #faece7; color: #993c1d; }
-  .tag.satisfied { background: var(--ok-soft); color: var(--ok); }
-  .tag.partial { background: var(--warn-soft); color: var(--warn); }
-  .tag.violated { background: var(--bad-soft); color: var(--bad); }
-  .tag.unverified { background: var(--surface-2); color: var(--text-2); }
+  .tag::before {
+    content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%;
+    border: 1px solid var(--ink); background: var(--kind, var(--ink));
+  }
+  .tag.added { --kind: var(--kind-added); }
+  .tag.removed { --kind: var(--kind-removed); }
+  .tag.moved { --kind: var(--kind-moved); }
+  .tag.resized { --kind: var(--kind-resized); }
+  .tag.restyled { --kind: var(--kind-restyled); }
+  .tag.reordered { --kind: var(--kind-reordered); }
+  .tag.satisfied { background: var(--wash); border-color: var(--ink); --kind: var(--ink); }
+  .tag.partial { background: var(--saffron); border-color: var(--ink); --kind: var(--ink); }
+  .tag.violated { background: var(--ink); border-color: var(--ink); color: var(--paper); --kind: var(--wash); }
+  .tag.unverified { background: var(--paper); color: var(--carbon); --kind: var(--silver); }
 
-  .field { margin-bottom: 9px; }
-  .field label { display: block; font-size: 11px; color: var(--text-2); margin-bottom: 4px; }
-  .field input[type="text"], .field textarea, .field select {
-    width: 100%; padding: 6px 8px; border: 1px solid var(--border);
-    border-radius: 6px; background: var(--surface); resize: vertical;
+  .field { margin-bottom: 12px; }
+  .field label {
+    display: block; margin-bottom: 5px;
+    color: var(--carbon); font-size: 14px; line-height: 1.4;
   }
-  .field textarea { min-height: 54px; }
+  .field input[type="text"], .field textarea, .field select,
+  input[type="text"], textarea, select {
+    width: 100%; min-width: 0; height: 36px; padding: 0 10px;
+    border: var(--hairline); border-radius: var(--radius-card);
+    background: var(--paper); color: var(--ink);
+    outline: none; line-height: 1.5;
+  }
+  textarea { height: auto; min-height: 64px; padding: 8px 10px; resize: vertical; }
+  input[type="text"]:focus, textarea:focus, select:focus {
+    border-color: var(--ink); box-shadow: 0 0 0 3px rgba(242,252,179,.9);
+  }
+  option { line-height: 1.5; }
+  .field textarea { min-height: 64px; }
   .ops { display: flex; flex-wrap: wrap; gap: 5px; }
   .ops label {
-    display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
-    border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px;
-    cursor: pointer; color: var(--text-2); margin: 0;
+    display: inline-flex; align-items: center; gap: 5px; margin: 0;
+    padding: 5px 12px; border: 1px solid var(--silver);
+    border-radius: var(--radius-pill);
+    background: var(--linen); color: var(--ink);
+    font-size: 14px; line-height: 1.4; cursor: pointer;
   }
-  .ops input { margin: 0; }
-  .ops label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-  .row { display: flex; gap: 6px; }
-  .row > * { flex: 1; }
-  .kv { font-family: var(--mono); font-size: 11px; color: var(--text-2); word-break: break-all; }
-  .diff-line { font-family: var(--mono); font-size: 11px; margin-top: 3px; }
-  .diff-line .from { color: var(--bad); text-decoration: line-through; }
-  .diff-line .to { color: var(--ok); }
+  .ops label:hover { background: var(--paper); border-color: var(--ink); }
+  .ops input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--ink); }
+  .ops label:has(input:checked) { background: var(--wash); border-color: var(--ink); }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; min-width: 0; }
+  .diff-line { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; margin-top: 5px; }
+  .diff-line .from { color: var(--slate); text-decoration: line-through; }
+  .diff-line .to { color: var(--ink); background: var(--wash); }
   .toast {
-    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-    background: #1c1c1a; color: #fff; padding: 8px 14px; border-radius: 999px;
-    font-size: 12px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+    position: fixed; left: 50%; bottom: 24px; max-width: min(520px, calc(100vw - 32px));
+    transform: translateX(-50%);
+    padding: 12px 16px; border: var(--hairline); border-radius: var(--radius-card);
+    background: var(--paper); color: var(--ink); box-shadow: var(--shadow-sm);
+    font-size: 16px; line-height: 1.5; opacity: 0; pointer-events: none; z-index: 50;
+    transition: opacity var(--ease);
   }
   .toast.show { opacity: 1; }
-  .hint { font-size: 11px; color: var(--text-3); padding: 6px 0; }
+
+  @media (max-width: 1024px) {
+    .sidebar { width: 320px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button, input, textarea, select, .toast, .tag, .pane, .card,
+    .seg button, .tabs button, .btn, .ops label { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -273,7 +414,7 @@ const OPERATION_LABELS = {
 };
 const SCOPE_LABELS = { element: "仅此元素", repeated: "同组件全部", page: "整页" };
 const BREAKPOINT_LABELS = { all: "全部断点", current: "仅当前", desktop: "桌面", tablet: "平板", mobile: "手机" };
-const KIND_COLOR = { added: "#3b6d11", removed: "#a32d2d", moved: "#185fa5", resized: "#534ab7", restyled: "#993c1d" };
+const KIND_COLOR = { added: "#000000", removed: "#575757", moved: "#888888", resized: "#c6c6c6", restyled: "#ffdc5c", reordered: "#f2fcb3" };
 const KIND_LABEL = { added: "新增", removed: "删除", moved: "位移", resized: "尺寸", restyled: "样式", reordered: "顺序" };
 const HANDLES = ["nw","n","ne","e","se","s","sw","w"];
 
@@ -389,9 +530,9 @@ async function computeHeat(state) {
     if (magnitude > 12) {
       changed += 1;
       const alpha = Math.min(0.85, 0.25 + magnitude / 255);
-      data[index] = 226;
-      data[index + 1] = 75;
-      data[index + 2] = 74;
+      data[index] = 255;
+      data[index + 1] = 220;
+      data[index + 2] = 92;
       data[index + 3] = Math.round(alpha * 255);
     }
   }
@@ -536,12 +677,19 @@ function paintOverlay(overlay, state, scale) {
     for (const cluster of state.clusters) {
       if (!cluster.region) continue;
       if (cluster.derived && !app.showDerived) continue;
-      const rect = svg("rect", {
-        class: "cluster",
+      const kind = cluster.kinds[0];
+      overlay.append(svg("rect", {
+        class: "cluster-halo",
         x: cluster.region.x, y: cluster.region.y,
         width: cluster.region.width, height: cluster.region.height,
-        stroke: KIND_COLOR[cluster.kinds[0]] || "#888780",
-        "stroke-opacity": cluster.derived ? 0.35 : 1,
+        "stroke-opacity": cluster.derived ? 0.1 : 0.22,
+      }));
+      const rect = svg("rect", {
+        class: kind ? `cluster ${kind}` : "cluster",
+        x: cluster.region.x, y: cluster.region.y,
+        width: cluster.region.width, height: cluster.region.height,
+        stroke: KIND_COLOR[kind] || "#000000",
+        "stroke-opacity": cluster.derived ? 0.4 : 1,
       });
       overlay.append(rect);
     }
@@ -550,7 +698,7 @@ function paintOverlay(overlay, state, scale) {
   for (const annotation of app.annotations) {
     if (annotation.stateId !== state.stateId) continue;
     const isActive = annotation.id === app.activeId;
-    const stroke = isActive ? "#a32d2d" : "#993556";
+    const stroke = isActive ? "#ffdc5c" : "#000000";
     const geometry = annotation.geometry;
     if (annotation.kind === "point") {
       overlay.append(svg("circle", { class: "anno-dot", cx: geometry.x, cy: geometry.y, r: 5, fill: stroke }));
@@ -572,11 +720,13 @@ function paintOverlay(overlay, state, scale) {
     }
     const labelWidth = 22 + String(annotation.id).length * 7;
     overlay.append(svg("rect", {
-      class: "anno-label-bg", x: geometry.x, y: Math.max(0, geometry.y - 16),
-      width: labelWidth, height: 15, rx: 3, fill: stroke,
+      class: `anno-label-bg${isActive ? " active" : ""}`,
+      x: geometry.x, y: Math.max(0, geometry.y - 16),
+      width: labelWidth, height: 15, rx: 7.5, fill: stroke,
     }));
     const label = svg("text", {
-      class: "anno-label", x: geometry.x + 5, y: Math.max(11, geometry.y - 5),
+      class: `anno-label${isActive ? " active" : ""}`,
+      x: geometry.x + 5, y: Math.max(11, geometry.y - 5),
     });
     label.textContent = annotation.id;
     overlay.append(label);
@@ -587,7 +737,7 @@ function paintOverlay(overlay, state, scale) {
     id: "head", viewBox: "0 0 10 10", refX: 8, refY: 5,
     markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse",
   });
-  marker.append(svg("path", { d: "M2 1L8 5L2 9", fill: "none", stroke: "#993556", "stroke-width": 1.5 }));
+  marker.append(svg("path", { d: "M2 1L8 5L2 9", fill: "none", stroke: "#000000", "stroke-width": 1.5 }));
   defs.append(marker);
   overlay.prepend(defs);
 
@@ -774,6 +924,7 @@ function bindPane(pane, overlay, state, scale) {
           target: targetOf(element),
           manipulation: {
             mode,
+            key: app.drag.key,
             before: { x: origin.x, y: origin.y, width: origin.width, height: origin.height },
             after: { x: round(preview.x), y: round(preview.y), width: round(preview.width), height: round(preview.height) },
             delta,
@@ -1214,7 +1365,7 @@ function selectField(label, options, value, onChange) {
 
 function buildExport() {
   return {
-    schemaVersion: "1.2",
+    schemaVersion: "1.3",
     roundId: app.data.roundId,
     sessionId: app.data.sessionId,
     fromRevision: app.data.fromRevision,

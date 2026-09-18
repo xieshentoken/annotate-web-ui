@@ -175,6 +175,9 @@ only the delta:
 - annotations whose verdict is `satisfied` are dropped and listed as closed;
 - conflicts between a re-issued annotation and a new one are surfaced, never
   silently resolved.
+- a manipulating annotation with no written `expected` blocks the round: nothing
+  is written and the blocking annotations are named, because a bare delta is a
+  measurement rather than an instruction.
 
 The consolidated request replaces the previous one. Do not accumulate rounds
 into a single growing document: the coding agent should read the smallest
@@ -186,5 +189,7 @@ correct instruction set.
 - The diff never invents a source location; it reports keys and clusters.
 - The preview never uploads a screenshot.
 - Consolidation never resolves a conflict on the user's behalf.
+- Consolidation never exports a manipulating annotation without a stated expected
+  result, on this path as much as on the first request.
 - The loop stops after `review.maxRounds` even if not converged, and reports
   what remains open.

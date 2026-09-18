@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-const SUPPORTED_SCHEMA_VERSIONS = new Set(["1.0", "1.1"]);
+const SUPPORTED_SCHEMA_VERSIONS = new Set(["1.0", "1.1", "1.2", "1.3"]);
 
 export const CHANGE_OPERATION_LABELS = {
   layout: "布局",
@@ -18,6 +18,13 @@ export const CHANGE_OPERATION_LABELS = {
 };
 
 const CHANGE_OPERATION_VALUES = new Set(Object.keys(CHANGE_OPERATION_LABELS));
+
+/* `alias` is a name the user typed, so a bad one is a warning, never a fatal
+ * error: the session keeps working without it, and the value is never
+ * rewritten or dropped — `id` and `target` are still what identify the
+ * element. Resolving the collision is the user's call, not this script's. */
+const ANNOTATION_ALIAS_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const GROUP_COHESION_VALUES = new Set(["container", "component", "mixed"]);
 
 export function isAllowedLocalUrl(rawUrl) {
   try {
@@ -69,7 +76,7 @@ export function validateSessionData(session) {
   }
 
   if (!SUPPORTED_SCHEMA_VERSIONS.has(session.schemaVersion)) {
-    errors.push('schemaVersion must be "1.0" or "1.1".');
+    errors.push('schemaVersion must be "1.0", "1.1", "1.2", or "1.3".');
   }
   if (typeof session.sessionId !== "string" || session.sessionId.length < 6) {
     errors.push("sessionId must be a non-empty stable identifier.");
@@ -115,6 +122,7 @@ export function validateSessionData(session) {
   }
 
   const annotationIds = new Set();
+  const aliases = new Set();
   for (const [index, annotation] of (session.annotations || []).entries()) {
     const prefix = `annotations[${index}]`;
     if (!isPlainObject(annotation)) {
@@ -128,6 +136,26 @@ export function validateSessionData(session) {
       errors.push(`${prefix}.id must be unique.`);
     } else {
       annotationIds.add(annotation.id);
+    }
+    if (annotation.alias !== undefined && annotation.alias !== null) {
+      if (typeof annotation.alias !== "string") {
+        warnings.push(
+          `${annotation.id || prefix}.alias is not a string; the value was kept exactly as written.`,
+        );
+      } else if (annotation.alias.trim().length > 0) {
+        if (!ANNOTATION_ALIAS_PATTERN.test(annotation.alias)) {
+          warnings.push(
+            `${annotation.id || prefix}.alias ${JSON.stringify(annotation.alias)} does not match ${ANNOTATION_ALIAS_PATTERN}; the name is kept as written because names are the user's to choose.`,
+          );
+        }
+        if (aliases.has(annotation.alias)) {
+          warnings.push(
+            `${annotation.id || prefix}.alias ${JSON.stringify(annotation.alias)} is already used by another annotation; ids stay authoritative and neither name was changed.`,
+          );
+        } else {
+          aliases.add(annotation.alias);
+        }
+      }
     }
     if (!stateIds.has(annotation.stateId)) {
       errors.push(`${prefix}.stateId must reference a captured state.`);
@@ -146,12 +174,9 @@ export function validateSessionData(session) {
       } else {
         const hasOperationsArray = Array.isArray(annotation.intent.operations);
         const operations = normalizeIntentOperations(annotation.intent);
-        if (
-          session.schemaVersion === "1.1" &&
-          !hasOperationsArray
-        ) {
+        if (session.schemaVersion !== "1.0" && !hasOperationsArray) {
           errors.push(
-            `${prefix}.intent.operations must be an array in schema version 1.1.`,
+            `${prefix}.intent.operations must be an array from schema version 1.1 onwards.`,
           );
         }
         if (hasOperationsArray) {
@@ -193,8 +218,125 @@ export function validateSessionData(session) {
         );
       }
     }
+    /* `key` is the manipulation's identity from 1.3 onwards: without it a delta
+     * cannot be attributed to the element it was measured on. Sessions written
+     * before then may carry a manipulation without a key, and those are
+     * reported rather than rejected. `mode` and `delta` are checked for every
+     * version — a gesture is only re-measurable if its numbers are numbers. */
+    if (annotation.manipulation !== undefined && annotation.manipulation !== null) {
+      if (!isPlainObject(annotation.manipulation)) {
+        errors.push(`${prefix}.manipulation must be an object.`);
+      } else {
+        const manipulation = annotation.manipulation;
+        if (
+          typeof manipulation.key !== "string" ||
+          manipulation.key.trim().length === 0
+        ) {
+          if (session.schemaVersion === "1.3") {
+            errors.push(
+              `${prefix}.manipulation.key must be a non-empty string from schema version 1.3 onwards.`,
+            );
+          } else {
+            warnings.push(
+              `${annotation.id || prefix}.manipulation has no key; a session written before 1.3 may carry one without a key, but the gesture then cannot be attributed to one element.`,
+            );
+          }
+        }
+        if (manipulation.mode !== "move" && manipulation.mode !== "resize") {
+          errors.push(`${prefix}.manipulation.mode must be "move" or "resize".`);
+        }
+        if (!isPlainObject(manipulation.delta)) {
+          errors.push(`${prefix}.manipulation.delta must be an object.`);
+        } else {
+          for (const axis of ["x", "y", "width", "height"]) {
+            if (!Number.isFinite(manipulation.delta[axis])) {
+              errors.push(
+                `${prefix}.manipulation.delta.${axis} must be a finite number.`,
+              );
+            }
+          }
+        }
+      }
+    }
   }
 
+  /* Groups are validated after the annotations so a membership check can ask
+   * the finished set. A group naming an annotation that does not exist is an
+   * error rather than a group with fewer members: silently dropping the member
+   * would change what the user asked for. */
+  if (session.groups !== undefined) {
+    if (!Array.isArray(session.groups)) {
+      errors.push("groups must be an array when present.");
+    } else {
+      const groupIds = new Set();
+      for (const [index, group] of session.groups.entries()) {
+        const prefix = `groups[${index}]`;
+        if (!isPlainObject(group)) {
+          errors.push(`${prefix} must be an object.`);
+          continue;
+        }
+        if (
+          typeof group.id !== "string" ||
+          group.id.trim().length === 0 ||
+          groupIds.has(group.id)
+        ) {
+          errors.push(`${prefix}.id must be non-empty and unique.`);
+        } else {
+          groupIds.add(group.id);
+        }
+        /* `name` is human text the user typed, Chinese included, so only
+         * emptiness is checked — never a character set. */
+        if (typeof group.name !== "string" || group.name.trim().length === 0) {
+          errors.push(`${prefix}.name must be a non-empty string.`);
+        }
+        if (
+          !Array.isArray(group.annotationIds) ||
+          group.annotationIds.length === 0 ||
+          group.annotationIds.some(
+            (value) => typeof value !== "string" || value.trim().length === 0,
+          )
+        ) {
+          errors.push(
+            `${prefix}.annotationIds must be a non-empty array of annotation ids.`,
+          );
+        } else {
+          for (const annotationId of group.annotationIds) {
+            if (!annotationIds.has(annotationId)) {
+              errors.push(
+                `${prefix}.annotationIds references unknown annotation ${JSON.stringify(annotationId)}.`,
+              );
+            }
+          }
+        }
+        if (!GROUP_COHESION_VALUES.has(group.cohesion)) {
+          errors.push(
+            `${prefix}.cohesion must be "container", "component", or "mixed".`,
+          );
+        } else if (
+          group.cohesion === "container" &&
+          (typeof group.containerKey !== "string" ||
+            group.containerKey.trim().length === 0)
+        ) {
+          errors.push(
+            `${prefix}.containerKey must be a non-empty string for a container group.`,
+          );
+        }
+      }
+    }
+  }
+
+  /* `null` is how a session without a reference serializes it, so only a
+   * non-null value has to be an object. */
+  if (session.reference !== undefined && session.reference !== null) {
+    if (!isPlainObject(session.reference)) {
+      errors.push("reference must be an object when present.");
+    } else if (
+      typeof session.reference.styleTarget !== "string" ||
+      session.reference.styleTarget.trim().length === 0
+    ) {
+      errors.push("reference.styleTarget must be a non-empty string.");
+    }
+  }
   return { errors, warnings };
 }
 

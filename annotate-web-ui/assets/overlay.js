@@ -11,12 +11,18 @@
     return;
   }
 
+  // Dia Browser palette: annotations land on pages we do not own, so an ink
+  // outline and the lime wash carry the contrast, and only the manipulation
+  // gestures keep a warm accent.
+  const WASH_FILL = "#f2fcb3";
   const COLORS = {
-    element: "#38bdf8",
-    box: "#fbbf24",
-    point: "#fb7185",
-    arrow: "#a78bfa",
-    redact: "#050505",
+    element: "#000000",
+    box: "#000000",
+    point: "#000000",
+    arrow: "#000000",
+    redact: "#020204",
+    move: "#ffdc5c",
+    resize: "#ffdc5c",
   };
 
   const CHANGE_OPERATIONS = [
@@ -77,9 +83,13 @@
     selectedId: null,
     annotationCounter: 0,
     stateCounter: 0,
+    groups: [],
+    groupCounter: 0,
+    groupSelection: [],
     pendingCapture: null,
     pendingTarget: null,
     drawing: null,
+    manipulating: null,
     panelDrag: null,
     host: null,
     shadow: null,
@@ -421,12 +431,83 @@
     };
   }
 
-  function targetAt(x, y) {
-    const previousDisplay = app.host.style.display;
-    app.host.style.display = "none";
+  /* --------------------------------------------- keys and real DOM geometry */
+
+  // A first-pass gesture has to carry the same key the inventory will use for
+  // that element, so the key is always asked of the probe and never rebuilt
+  // here. The probe answers from the last collect() pass, so the first query
+  // warms it.
+  let inventoryWarm = false;
+
+  function inventorySnapshot() {
+    const collect = window.__SYMBUI_INVENTORY__;
+    if (typeof collect !== "function") return null;
+    try {
+      const snapshot = collect({
+        stateId: app.activeStateId || null,
+        includeAncestry: false,
+      });
+      inventoryWarm = true;
+      return snapshot;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // The manipulation's `key` is an identity, not a hint: only a key the
+  // inventory assigned to the element *itself* qualifies. The ancestor fallback
+  // that grouping relies on would attribute the gesture to a container and the
+  // next capture would measure the wrong box, so the probe's `exact` flag
+  // decides. A fallback is retried once against a fresh capture before giving up.
+  function exactKeyForElement(element) {
+    if (!element || typeof window.__SYMBUI_KEY_INFO__ !== "function") return null;
+    const read = () => {
+      try {
+        const info = window.__SYMBUI_KEY_INFO__(element);
+        return info && info.exact && info.key ? info.key : null;
+      } catch (error) {
+        return null;
+      }
+    };
+    if (!inventoryWarm && !inventorySnapshot()) return null;
+    const warm = read();
+    if (warm) return warm;
+    // A timer, a poll, or an HMR swap can replace a node during the freeze and
+    // leave the published mapping stale. One fresh capture gives the node a
+    // chance to have its own key; if it still does not, the gesture is refused.
+    if (!inventorySnapshot()) return null;
+    return read();
+  }
+
+  // Real geometry, rounded to CSS pixels: the manipulation's `before` must be
+  // the captured layout, never a screenshot pixel offset.
+  function elementRect(element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  }
+
+  // The element the pointer is really over. The toolbar steps out of the hit
+  // test for the length of the query: flipping the stage's pointer events keeps
+  // the DOM (and any focused field) exactly where it was, which hiding the host
+  // would not.
+  function elementUnderPoint(x, y) {
+    const stage = app.ui.stage;
+    const previous = stage.style.pointerEvents;
+    stage.style.pointerEvents = "none";
     const element = document.elementFromPoint(x, y);
-    app.host.style.display = previousDisplay;
-    return captureElement(element);
+    stage.style.pointerEvents = previous;
+    if (!(element instanceof Element)) return null;
+    if (element === app.host || app.host.contains(element)) return null;
+    return element;
+  }
+
+  function targetAt(x, y) {
+    return captureElement(elementUnderPoint(x, y));
   }
 
   function stateById(id) {
@@ -512,7 +593,13 @@
   function annotationLabel(annotation) {
     if (annotation.kind === "redact") return `${annotation.id} 隐私遮挡`;
     const expected = shortText(annotation.intent?.expected, 34);
-    return expected || `${annotation.id} ${annotation.kind}`;
+    const gesture =
+      annotation.manipulation?.mode === "move"
+        ? "移动 "
+        : annotation.manipulation?.mode === "resize"
+          ? "缩放 "
+          : "";
+    return `${gesture}${expected || annotation.kind}`;
   }
 
   function svgElement(name, attributes = {}) {
@@ -533,16 +620,18 @@
       y: clamp(y - 24, 4, window.innerHeight - 24),
       width: 42,
       height: 22,
-      rx: 5,
-      fill: COLORS[annotation.kind] || COLORS.box,
+      rx: 11,
+      fill: "#ffffff",
+      stroke: "#000000",
+      "stroke-width": 1,
     });
     const text = svgElement("text", {
       x: clamp(x + 21, 25, window.innerWidth - 27),
       y: clamp(y - 9, 19, window.innerHeight - 9),
       "text-anchor": "middle",
-      fill: "#08111f",
+      fill: "#000000",
       "font-size": 12,
-      "font-weight": 800,
+      "font-weight": 650,
       "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
     });
     text.textContent = annotation.id;
@@ -555,7 +644,7 @@
     svg.innerHTML = `
       <defs>
         <marker id="symbui-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-          <path d="M0,0 L0,6 L9,3 z" fill="#a78bfa"></path>
+          <path d="M0,0 L0,6 L9,3 z" fill="#000000"></path>
         </marker>
       </defs>
     `;
@@ -572,8 +661,8 @@
             cx: geometry.x,
             cy: geometry.y,
             r: selected ? 11 : 8,
-            fill: color,
-            stroke: "#ffffff",
+            fill: WASH_FILL,
+            stroke: "#000000",
             "stroke-width": selected ? 3 : 2,
           }),
         );
@@ -586,7 +675,7 @@
             x2: geometry.x2,
             y2: geometry.y2,
             stroke: color,
-            "stroke-width": selected ? 5 : 3,
+            "stroke-width": selected ? 3 : 2,
             "marker-end": "url(#symbui-arrow)",
           }),
         );
@@ -601,10 +690,14 @@
             rx: annotation.kind === "redact" ? 0 : 4,
             fill:
               annotation.kind === "redact"
-                ? "#050505"
-                : `${color}${selected ? "38" : "20"}`,
-            stroke: color,
-            "stroke-width": selected ? 4 : 2,
+                ? COLORS.redact
+                : annotation.kind === "move" ||
+                    annotation.kind === "resize"
+                  ? `${color}${selected ? "38" : "20"}`
+                  : `${WASH_FILL}${selected ? "b3" : "66"}`,
+            stroke:
+              annotation.kind === "redact" ? COLORS.redact : color,
+            "stroke-width": selected ? 3 : 2,
             "stroke-dasharray": annotation.kind === "box" ? "8 4" : "",
           }),
         );
@@ -625,6 +718,7 @@
       empty.className = "empty";
       empty.textContent = "尚无标注";
       list.append(empty);
+      renderGroups();
       renderEditor();
       return;
     }
@@ -634,7 +728,12 @@
       button.type = "button";
       button.className = "annotation-item";
       button.classList.toggle("selected", annotation.id === app.selectedId);
-      button.innerHTML = `<strong>${annotation.id}</strong><span>${annotationLabel(annotation)}</span>`;
+      // The system id stays visible; a name is an addition, never a
+      // replacement for it.
+      const alias = annotation.alias
+        ? `${escapeHtml(annotation.alias)} · `
+        : "";
+      button.innerHTML = `<strong>${annotation.id}</strong><span>${alias}${escapeHtml(annotationLabel(annotation))}</span>`;
       button.addEventListener("click", () => {
         app.selectedId = annotation.id;
         renderAnnotationList();
@@ -643,9 +742,318 @@
       });
       list.append(button);
     }
+    renderGroups();
     renderEditor();
   }
 
+  /* ---------------------------------------------------------------- groups */
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[character],
+    );
+  }
+
+  function cohesionLabel(cohesion) {
+    if (cohesion === "container") return "同一容器";
+    if (cohesion === "component") return "同一组件";
+    return "混合";
+  }
+
+  function groupMembersOf(annotationIds) {
+    return annotationIds
+      .map((id) => app.annotations.find((annotation) => annotation.id === id))
+      .filter(Boolean);
+  }
+
+  // The nearest captured element to the annotation's own rect. One anchor is
+  // rendered many times, and the first matching instance is not necessarily the
+  // annotated one: two members each inside a different container would both
+  // resolve to the first instance and the group would claim a container that
+  // does not hold them. `null` means the rect cannot decide, and the caller must
+  // degrade to `mixed` rather than name a container.
+  function nearestElement(candidates, rect) {
+    if (candidates.length === 1) return candidates[0];
+    if (!rect) return null;
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    let best = null;
+    let bestDistance = Infinity;
+    let tied = false;
+    for (const candidate of candidates) {
+      const candidateRect = candidate.rect;
+      if (!candidateRect) return null;
+      const distance =
+        (candidateRect.x + candidateRect.width / 2 - centerX) ** 2 +
+        (candidateRect.y + candidateRect.height / 2 - centerY) ** 2;
+      if (distance < bestDistance - 1e-9) {
+        bestDistance = distance;
+        best = candidate;
+        tied = false;
+      } else if (Math.abs(distance - bestDistance) <= 1e-9) {
+        tied = true;
+      }
+    }
+    return tied ? null : best;
+  }
+
+  // The element an annotation points at, expressed as the inventory's key for
+  // it. A gesture already recorded that key; otherwise the target evidence is
+  // matched against the inventory by the same identity that builds the key and
+  // disambiguated with the rect `captureElement` recorded.
+  function elementKeyForAnnotation(annotation, elements) {
+    if (annotation.manipulation?.key) return annotation.manipulation.key;
+    const target = annotation.target;
+    if (!target || elements.length === 0) return null;
+    const match = (predicate) => {
+      const candidates = elements.filter(predicate);
+      if (candidates.length === 0) return null;
+      return nearestElement(candidates, target.rect)?.key || null;
+    };
+    if (target.testId) {
+      const hit = match((element) => element.testId === target.testId);
+      if (hit) return hit;
+    }
+    if (target.id) {
+      const hit = match((element) => element.id === target.id);
+      if (hit) return hit;
+    }
+    if (target.selector) {
+      const hit = match((element) => element.selector === target.selector);
+      if (hit) return hit;
+    }
+    if (target.sourceFile) {
+      const hit = match(
+        (element) =>
+          element.anchor &&
+          element.anchor.file === target.sourceFile &&
+          element.anchor.line === target.sourceLine,
+      );
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function anchorForAnnotation(annotation, element) {
+    if (element && element.anchor) return element.anchor;
+    const target = annotation.target;
+    if (target && target.sourceFile) {
+      return {
+        file: target.sourceFile,
+        line: target.sourceLine || 1,
+        column: null,
+        component: target.componentName || "",
+      };
+    }
+    return null;
+  }
+
+  // "Do these members actually live together?" is a question about the captured
+  // tree, not about where the boxes happen to sit on screen.
+  function computeCohesion(annotationIds) {
+    const members = groupMembersOf(annotationIds);
+    if (members.length === 0) return { cohesion: "mixed" };
+    const collect = window.__SYMBUI_INVENTORY__;
+    if (
+      typeof collect !== "function" ||
+      typeof window.__SYMBUI_KEY_FOR__ !== "function"
+    ) {
+      return { cohesion: "mixed" };
+    }
+    let snapshot;
+    try {
+      snapshot = collect({
+        stateId: app.activeStateId || null,
+        includeAncestry: false,
+      });
+    } catch (error) {
+      return { cohesion: "mixed" };
+    }
+    inventoryWarm = true;
+    const elements = Array.isArray(snapshot?.elements) ? snapshot.elements : [];
+    const byKey = new Map(elements.map((element) => [element.key, element]));
+    const keys = members.map((annotation) =>
+      elementKeyForAnnotation(annotation, elements),
+    );
+    // No key means no honest answer about the shared container; never guess one.
+    if (keys.some((key) => !key)) return { cohesion: "mixed" };
+
+    const ancestorChains = keys.map((key) => {
+      const chain = [];
+      let current = byKey.get(key);
+      let hops = 0;
+      while (current?.parentKey && hops < 40) {
+        chain.push(current.parentKey);
+        current = byKey.get(current.parentKey);
+        hops += 1;
+      }
+      return chain;
+    });
+    const shared = ancestorChains[0].find((candidate) =>
+      ancestorChains.every((chain) => chain.includes(candidate)),
+    );
+    if (shared) {
+      return {
+        cohesion: "container",
+        containerKey: shared,
+        container: { anchor: byKey.get(shared)?.anchor || null },
+      };
+    }
+
+    const anchors = members.map((annotation, index) =>
+      anchorForAnnotation(annotation, byKey.get(keys[index])),
+    );
+    const components = anchors.map((anchor) => anchor?.component || "");
+    if (components.every(Boolean) && new Set(components).size === 1) {
+      return { cohesion: "component" };
+    }
+    const files = anchors.map((anchor) => anchor?.file || "");
+    if (files.every(Boolean) && new Set(files).size === 1) {
+      return { cohesion: "component" };
+    }
+    return { cohesion: "mixed" };
+  }
+
+  function createGroup() {
+    const memberIds = app.groupSelection.filter((id) =>
+      app.annotations.some((annotation) => annotation.id === id),
+    );
+    if (memberIds.length === 0) {
+      showToast("请先勾选要放进同一组的标注", "error");
+      return;
+    }
+    const name = app.ui.groupName.value.trim().slice(0, 64);
+    if (!name) {
+      showToast("请先填写分组名称", "error");
+      app.ui.groupName.focus();
+      return;
+    }
+    const group = {
+      id: `G${++app.groupCounter}`,
+      name,
+      annotationIds: memberIds,
+      ...computeCohesion(memberIds),
+    };
+    app.groups.push(group);
+    app.groupSelection = [];
+    app.ui.groupName.value = "";
+    renderGroups();
+    showToast(`已建立分组 ${group.name}`, "success");
+  }
+
+  function deleteGroup(id) {
+    app.groups = app.groups.filter((group) => group.id !== id);
+    renderGroups();
+    showToast(`已删除分组 ${id}`, "success");
+  }
+
+  // A group must never name an annotation that no longer exists: downstream
+  // that is a validation error, not a group with fewer members. `cohesion` was
+  // decided when the group was created and is never recomputed here.
+  function pruneGroups() {
+    const existing = new Set(
+      app.annotations.map((annotation) => annotation.id),
+    );
+    const kept = [];
+    for (const group of app.groups) {
+      const annotationIds = group.annotationIds.filter((id) =>
+        existing.has(id),
+      );
+      if (annotationIds.length === 0) continue;
+      kept.push({ ...group, annotationIds });
+    }
+    app.groups = kept;
+    app.groupSelection = app.groupSelection.filter((id) => existing.has(id));
+    renderGroups();
+  }
+
+  function renderGroups() {
+    const members = app.ui.groupMembers;
+    members.innerHTML = "";
+    const current = activeState();
+    const candidates = current
+      ? annotationsForState(current.id).filter(
+          (annotation) => annotation.kind !== "redact",
+        )
+      : [];
+    // A checkbox only ever represents an annotation this state shows. A
+    // selection that survived a freeze switch would be invisible yet still
+    // accepted, building a group whose members the user cannot see — and
+    // cohesion would then be computed against a DOM that no longer holds them.
+    const selectable = new Set(candidates.map((annotation) => annotation.id));
+    if (app.groupSelection.some((id) => !selectable.has(id))) {
+      app.groupSelection = app.groupSelection.filter((id) =>
+        selectable.has(id),
+      );
+    }
+    if (candidates.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "冻结页面并标注后，可把同一批标注建成一组";
+      members.append(empty);
+    }
+    for (const annotation of candidates) {
+      const label = document.createElement("label");
+      label.className = "group-member";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = annotation.id;
+      checkbox.checked = app.groupSelection.includes(annotation.id);
+      checkbox.addEventListener("change", () => {
+        app.groupSelection = checkbox.checked
+          ? [...new Set([...app.groupSelection, annotation.id])]
+          : app.groupSelection.filter((id) => id !== annotation.id);
+      });
+      const text = document.createElement("span");
+      text.textContent = annotation.alias
+        ? `${annotation.id} ${annotation.alias}`
+        : annotation.id;
+      label.append(checkbox, text);
+      members.append(label);
+    }
+    renderGroupList();
+  }
+
+  function renderGroupList() {
+    const list = app.ui.groupList;
+    list.innerHTML = "";
+    if (app.groups.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "尚无分组";
+      list.append(empty);
+      return;
+    }
+    for (const group of app.groups) {
+      const row = document.createElement("div");
+      row.className = "group-item";
+      const name = document.createElement("input");
+      name.className = "group-item-name";
+      name.value = group.name;
+      name.maxLength = 64;
+      name.addEventListener("input", () => {
+        group.name = name.value;
+      });
+      const meta = document.createElement("span");
+      meta.className = "group-item-meta";
+      meta.textContent = `${group.id} · ${group.annotationIds.length} 条 · ${cohesionLabel(group.cohesion)}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "danger group-delete";
+      remove.textContent = "删除";
+      remove.addEventListener("click", () => deleteGroup(group.id));
+      row.append(name, meta, remove);
+      list.append(row);
+    }
+  }
   function selectedAnnotation() {
     return app.annotations.find((item) => item.id === app.selectedId);
   }
@@ -666,6 +1074,16 @@
       button.setAttribute("aria-pressed", String(selected));
     });
     app.ui.expected.value = annotation.intent.expected;
+    app.ui.alias.value = annotation.alias || "";
+    const manipulation = annotation.manipulation;
+    app.ui.manipulationNote.classList.toggle("hidden", !manipulation);
+    if (manipulation) {
+      const { before, after, delta } = manipulation;
+      app.ui.manipulationNote.textContent =
+        `${manipulation.mode === "move" ? "移动" : "缩放"}：` +
+        `${before.x},${before.y} ${before.width}×${before.height} → ` +
+        `${after.x},${after.y} ${after.width}×${after.height}（Δ ${delta.x},${delta.y} ${delta.width}×${delta.height} px）`;
+    }
     app.ui.expected.placeholder = expectedPlaceholder(operations);
     app.ui.scope.value = annotation.intent.scope;
     app.ui.breakpoint.value = annotation.intent.breakpoint;
@@ -747,6 +1165,7 @@
     app.annotations.splice(index, 1);
     const remaining = annotationsForState(app.activeStateId);
     app.selectedId = remaining.at(-1)?.id || null;
+    pruneGroups();
     renderAnnotations();
     renderAnnotationList();
   }
@@ -771,6 +1190,7 @@
     app.annotations = app.annotations.filter(
       (annotation) => annotation.stateId !== state.id,
     );
+    pruneGroups();
     app.selectedId = null;
 
     const nextState = app.states[index] || app.states[index - 1] || null;
@@ -794,6 +1214,7 @@
       if (app.annotations[index].stateId !== current.id) continue;
       const [removed] = app.annotations.splice(index, 1);
       if (removed.id === app.selectedId) app.selectedId = null;
+      pruneGroups();
       renderAnnotations();
       renderAnnotationList();
       return;
@@ -802,6 +1223,16 @@
 
   function chooseTool(tool) {
     app.tool = tool;
+    if (tool !== "move" && tool !== "resize") {
+      cancelManipulation();
+      app.ui.draft.style.display = "none";
+    }
+    app.ui.stage.style.cursor =
+      tool === "move"
+        ? "move"
+        : tool === "resize"
+          ? "nwse-resize"
+          : "crosshair";
     for (const button of app.ui.toolButtons) {
       button.classList.toggle("active", button.dataset.tool === tool);
     }
@@ -926,7 +1357,7 @@
       height: `${height}px`,
       borderColor: COLORS[tool] || COLORS.box,
       background:
-        tool === "redact" ? "rgba(0,0,0,.78)" : "rgba(56,189,248,.08)",
+        tool === "redact" ? "rgba(2,2,4,.78)" : "rgba(242,252,179,.45)",
     });
   }
 
@@ -938,19 +1369,37 @@
       createAnnotation("point", point, targetAt(point.x, point.y));
       return;
     }
+    if (app.tool === "move" || app.tool === "resize") {
+      if (!startManipulation(point)) return;
+      capturePointer(app.ui.stage, event.pointerId);
+      event.preventDefault();
+      return;
+    }
     app.drawing = { start: point, current: point, tool: app.tool };
-    app.ui.stage.setPointerCapture(event.pointerId);
+    capturePointer(app.ui.stage, event.pointerId);
     drawDraft(point, point, app.tool);
     event.preventDefault();
   }
 
   function stagePointerMove(event) {
-    if (!app.drawing) return;
+    if (app.manipulating) {
+      updateManipulation(viewportPoint(event));
+      return;
+    }
+    if (!app.drawing) {
+      previewManipulationTarget(event);
+      return;
+    }
     app.drawing.current = viewportPoint(event);
     drawDraft(app.drawing.start, app.drawing.current, app.drawing.tool);
   }
 
   function stagePointerUp(event) {
+    if (app.manipulating) {
+      updateManipulation(viewportPoint(event));
+      finishManipulation();
+      return;
+    }
     if (!app.drawing) return;
     const drawing = app.drawing;
     app.drawing = null;
@@ -988,6 +1437,178 @@
     );
   }
 
+  /* -------------------------------------------------- move / resize gestures */
+
+  const MIN_MANIPULATION_SIZE = 4;
+
+  // Which corner a resize starts from: the quadrant of the element the pointer
+  // went down in. review.html grows the same gesture into 8 explicit handles;
+  // the first pass keeps the drag readable instead of adding a handle layer.
+  function resizeHandleFor(rect, point) {
+    const horizontal = point.x < rect.x + rect.width / 2 ? "w" : "e";
+    const vertical = point.y < rect.y + rect.height / 2 ? "n" : "s";
+    return vertical + horizontal;
+  }
+
+  function capturePointer(element, pointerId) {
+    try {
+      element.setPointerCapture?.(pointerId);
+    } catch (error) {
+      // A synthetic pointer has nothing to capture.
+    }
+  }
+
+  function showManipulationDraft(rect, tool) {
+    Object.assign(app.ui.draft.style, {
+      display: "block",
+      left: `${rect.x}px`,
+      top: `${rect.y}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
+      borderStyle: "dashed",
+      borderColor: COLORS[tool] || COLORS.box,
+      background: "transparent",
+    });
+  }
+
+  function startManipulation(point) {
+    const element = elementUnderPoint(point.x, point.y);
+    if (!element) return false;
+    const before = elementRect(element);
+    const mode = app.tool === "resize" ? "resize" : "move";
+    app.manipulating = {
+      mode,
+      handle: mode === "resize" ? resizeHandleFor(before, point) : null,
+      element,
+      before,
+      start: point,
+      current: { ...before },
+    };
+    showManipulationDraft(before, app.tool);
+    return true;
+  }
+
+  function updateManipulation(point) {
+    const state = app.manipulating;
+    if (!state) return;
+    const dx = point.x - state.start.x;
+    const dy = point.y - state.start.y;
+    const before = state.before;
+    let next;
+    if (state.mode === "move") {
+      next = { ...before, x: before.x + dx, y: before.y + dy };
+    } else {
+      const handle = state.handle || "se";
+      const width = handle.includes("e")
+        ? Math.max(MIN_MANIPULATION_SIZE, before.width + dx)
+        : handle.includes("w")
+          ? Math.max(MIN_MANIPULATION_SIZE, before.width - dx)
+          : before.width;
+      const height = handle.includes("s")
+        ? Math.max(MIN_MANIPULATION_SIZE, before.height + dy)
+        : handle.includes("n")
+          ? Math.max(MIN_MANIPULATION_SIZE, before.height - dy)
+          : before.height;
+      next = {
+        x: handle.includes("w") ? before.x + dx : before.x,
+        y: handle.includes("n") ? before.y + dy : before.y,
+        width,
+        height,
+      };
+    }
+    state.current = {
+      x: Math.round(next.x),
+      y: Math.round(next.y),
+      width: Math.round(next.width),
+      height: Math.round(next.height),
+    };
+    showManipulationDraft(state.current, app.tool);
+  }
+
+  function cancelManipulation() {
+    if (!app.manipulating) return;
+    app.manipulating = null;
+    app.ui.draft.style.display = "none";
+  }
+
+  function cancelDrawing() {
+    if (!app.drawing) return;
+    app.drawing = null;
+    app.ui.draft.style.display = "none";
+  }
+
+  // `pointercancel` is a cancel, not an up: a touch or trackpad gesture taking
+  // over, or a lost pointer capture, must not commit the last coordinates as a
+  // real annotation. Only `pointerup` finishes.
+  function stagePointerCancel() {
+    cancelManipulation();
+    cancelDrawing();
+  }
+
+  function previewManipulationTarget(event) {
+    if (app.mode !== "frozen") return;
+    if (app.tool !== "move" && app.tool !== "resize") return;
+    if (event.composedPath().includes(app.ui.panel)) return;
+    const element = elementUnderPoint(event.clientX, event.clientY);
+    if (!element) {
+      app.ui.draft.style.display = "none";
+      return;
+    }
+    showManipulationDraft(elementRect(element), app.tool);
+  }
+
+  function finishManipulation() {
+    const state = app.manipulating;
+    if (!state) return;
+    app.manipulating = null;
+    app.ui.draft.style.display = "none";
+    const before = state.before;
+    const after = state.current;
+    const delta = {
+      x: after.x - before.x,
+      y: after.y - before.y,
+      width: after.width - before.width,
+      height: after.height - before.height,
+    };
+    if (!delta.x && !delta.y && !delta.width && !delta.height) return;
+    // Contract rule 2: the key is the manipulation's identity, so an ancestor
+    // fallback is never acceptable. Without the element's own key there is no
+    // annotation to record — the gesture is dropped and the page stays as it is.
+    const key = exactKeyForElement(state.element);
+    if (!key) {
+      showToast(
+        "这个元素在本次页面捕获里没有稳定身份，未记录这次操作；请等页面稳定后重新冻结再试。",
+        "error",
+      );
+      return;
+    }
+    const annotation = createAnnotation(
+      "element",
+      after,
+      captureElement(state.element),
+    );
+    if (!annotation) return;
+    annotation.manipulation = {
+      mode: state.mode,
+      key,
+      // Real geometry from getBoundingClientRect, never screenshot pixels.
+      before,
+      after,
+      delta,
+    };
+    annotation.intent = {
+      ...annotation.intent,
+      operations: ["layout"],
+    };
+    renderAnnotations();
+    renderAnnotationList();
+    showToast(
+      state.mode === "move"
+        ? "已记录移动量，请填写预期结果"
+        : "已记录尺寸变化，请填写预期结果",
+    );
+  }
+
   function loadImage(source) {
     return new Promise((resolve, reject) => {
       const image = new Image();
@@ -1001,14 +1622,14 @@
     const geometry = annotation.geometry;
     const color = COLORS[annotation.kind] || COLORS.box;
     context.save();
-    context.lineWidth = 3;
+    context.lineWidth = 2;
     context.strokeStyle = color;
     context.fillStyle = color;
     context.font =
-      "800 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+      "650 12px ui-monospace, SFMono-Regular, Menlo, monospace";
 
     if (annotation.kind === "redact") {
-      context.fillStyle = "#050505";
+      context.fillStyle = COLORS.redact;
       context.fillRect(
         geometry.x,
         geometry.y,
@@ -1021,7 +1642,9 @@
     if (annotation.kind === "point") {
       context.beginPath();
       context.arc(geometry.x, geometry.y, 9, 0, Math.PI * 2);
+      context.fillStyle = WASH_FILL;
       context.fill();
+      context.stroke();
     } else if (annotation.kind === "arrow") {
       const angle = Math.atan2(
         geometry.y2 - geometry.y1,
@@ -1044,7 +1667,10 @@
       context.closePath();
       context.fill();
     } else {
-      context.fillStyle = `${color}24`;
+      context.fillStyle =
+        annotation.kind === "move" || annotation.kind === "resize"
+          ? `${color}24`
+          : "#f2fcb366";
       context.fillRect(
         geometry.x,
         geometry.y,
@@ -1071,10 +1697,12 @@
         : annotation.kind === "arrow"
           ? geometry.y1 - 26
           : geometry.y - 26;
-    context.fillStyle = color;
+    context.fillStyle = "#ffffff";
     context.fillRect(labelX, Math.max(2, labelY), 42, 22);
-    context.fillStyle = "#08111f";
-    context.textAlign = "center";
+    context.lineWidth = 1;
+    context.strokeStyle = "#000000";
+    context.strokeRect(labelX + .5, Math.max(2, labelY) + .5, 41, 21);
+    context.fillStyle = "#000000";
     context.fillText(annotation.id, labelX + 21, Math.max(17, labelY + 15));
     context.restore();
   }
@@ -1122,6 +1750,25 @@
       app.ui.operationButtons[0]?.focus();
       return;
     }
+    // A raw delta is a measurement, not an instruction: without an expected
+    // result there is nothing to implement and nothing to verify against.
+    const bareManipulation = actionable.find(
+      (annotation) =>
+        annotation.manipulation && !annotation.intent.expected.trim(),
+    );
+    if (bareManipulation) {
+      selectState(bareManipulation.stateId);
+      app.selectedId = bareManipulation.id;
+      setMode("frozen");
+      renderAnnotationList();
+      renderAnnotations();
+      showToast(
+        `${bareManipulation.id} 只记录了${bareManipulation.manipulation.mode === "move" ? "位移量" : "尺寸变化"}：位移是测量值，不是指令。请写清改完之后应该是什么样`,
+        "error",
+      );
+      app.ui.expected.focus();
+      return;
+    }
     const incomplete = actionable.find(
       (annotation) => !annotation.intent.expected.trim(),
     );
@@ -1149,8 +1796,27 @@
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
 
+      // A name is optional and is never written as an empty string; a
+      // manipulation is written only when a gesture actually recorded one.
+      const annotations = app.annotations.map((annotation) => {
+        const copy = JSON.parse(JSON.stringify(annotation));
+        if (typeof copy.alias !== "string" || copy.alias.trim().length === 0) {
+          delete copy.alias;
+        } else {
+          copy.alias = copy.alias.trim();
+        }
+        if (!copy.manipulation) delete copy.manipulation;
+        return copy;
+      });
+      const groups = app.groups.map((group) =>
+        JSON.parse(JSON.stringify(group)),
+      );
       const session = {
-        schemaVersion: "1.1",
+        // 1.3 is claimed only when the session carries a 1.3 field.
+        schemaVersion:
+          groups.length > 0 || annotations.some((annotation) => annotation.alias)
+            ? "1.3"
+            : "1.1",
         sessionId: config.sessionId,
         createdAt: config.createdAt,
         completedAt: nowIso(),
@@ -1167,9 +1833,8 @@
           beforeImage: state.beforeImage,
           annotatedImage: state.annotatedImage,
         })),
-        annotations: app.annotations.map((annotation) =>
-          JSON.parse(JSON.stringify(annotation)),
-        ),
+        annotations,
+        groups,
       };
       send("finish-session", { session });
       showToast("正在整理修改规格…");
@@ -1183,6 +1848,9 @@
   function receive(message) {
     if (!message || typeof message !== "object") return;
     if (message.type === "capture-ready") {
+      // A new freeze is a new page state: the probe's key mapping has to be
+      // rebuilt against the DOM as it is now, not as it was at the last drag.
+      inventoryWarm = false;
       setCaptureUiHidden(false);
       const state = {
         ...app.pendingCapture,
@@ -1251,7 +1919,7 @@
       zIndex: "2147483647",
       pointerEvents: "none",
       fontFamily:
-        'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     });
     document.documentElement.append(host);
     const shadow = host.attachShadow({ mode: "open" });
@@ -1260,9 +1928,46 @@
 
     const style = document.createElement("style");
     style.textContent = `
+      :host {
+        --bone: #f8f8f8;
+        --paper: #ffffff;
+        --linen: #efefef;
+        --ink: #000000;
+        --carbon: #636363;
+        --slate: #888888;
+        --silver: #c6c6c6;
+        --graphite: #575757;
+        --void: #020204;
+        --wash: #f2fcb3;
+        --saffron: #ffdc5c;
+        --radius-card: 12px;
+        --radius-cta: 20px;
+        --radius-panel: 24px;
+        --radius-pill: 9999px;
+        --hairline: 1px solid var(--ink);
+        --shadow-sm: rgba(0,0,0,.06) 0px 2px 8px 0px, rgba(0,0,0,.04) 0px 0px 2px 0px;
+        --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        --ease: 0.2s ease;
+      }
       * { box-sizing: border-box; }
       button, input, textarea, select { font: inherit; }
+      button, input, textarea, select {
+        font-family: var(--font-sans);
+        transition:
+          color var(--ease),
+          background-color var(--ease),
+          border-color var(--ease),
+          opacity var(--ease);
+      }
       button { cursor: pointer; }
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      select:focus-visible {
+        outline: 2px solid var(--ink);
+        outline-offset: 2px;
+      }
       .stage {
         display: none;
         position: fixed;
@@ -1272,7 +1977,7 @@
         overflow: hidden;
         pointer-events: auto;
         cursor: crosshair;
-        background: #0b1020;
+        background: var(--void);
       }
       .stage.visible { display: block; }
       .stage > img {
@@ -1294,14 +1999,15 @@
       .draft {
         display: none;
         position: fixed;
-        border: 2px dashed #38bdf8;
+        border: 2px dashed var(--ink);
+        background: rgba(242,252,179,.45);
         pointer-events: none;
       }
       .picker-highlight {
         display: none;
         position: fixed;
-        border: 2px solid #38bdf8;
-        background: rgba(56,189,248,.12);
+        border: 2px solid var(--ink);
+        background: rgba(242,252,179,.45);
         box-shadow: 0 0 0 1px rgba(255,255,255,.75) inset;
         pointer-events: none;
       }
@@ -1313,240 +2019,557 @@
         max-height: calc(100vh - 28px);
         display: flex;
         flex-direction: column;
-        color: #e5eefc;
-        background: rgba(10,17,31,.97);
-        border: 1px solid rgba(148,163,184,.28);
-        border-radius: 16px;
-        box-shadow: 0 24px 70px rgba(0,0,0,.42);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        font-size: 16px;
+        line-height: 1.5;
+        background: var(--bone);
+        border: var(--hairline);
+        border-radius: var(--radius-panel);
+        box-shadow: var(--shadow-sm);
         overflow: hidden;
         pointer-events: auto;
-        backdrop-filter: blur(18px);
       }
-      .panel.collapsed { width: 188px; }
+      .panel::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(270deg, #FD02F5, #FA3D1D 15.94%, #FFB005 42.76%, #E1E1FE 72.48%, #0358F7 100.02%, #340B05 150.75%);
+        pointer-events: none;
+      }
+      .panel.collapsed { width: 296px; }
       .panel.collapsed .panel-body,
       .panel.collapsed .panel-footer { display: none; }
       .panel-header {
         min-height: 58px;
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 12px 14px;
-        border-bottom: 1px solid rgba(148,163,184,.18);
+        gap: 12px;
+        padding: 15px 16px 13px;
+        border-bottom: var(--hairline);
         cursor: grab;
         touch-action: none;
         user-select: none;
       }
       .panel.dragging .panel-header { cursor: grabbing; }
       .brand {
+        flex: 0 0 auto;
         display: grid;
         place-items: center;
-        width: 32px;
-        height: 32px;
-        border-radius: 9px;
-        color: #07111f;
-        background: linear-gradient(135deg,#67e8f9,#38bdf8);
-        font-weight: 900;
+        width: 30px;
+        height: 30px;
+        border-radius: var(--radius-card);
+        color: var(--wash);
+        background: var(--ink);
+        font-family: var(--font-mono);
+        font-size: 14px;
+        line-height: 1.25;
+        letter-spacing: .02em;
+        text-transform: uppercase;
       }
       .title { flex: 1; min-width: 0; }
-      .title strong { display: block; font-size: 14px; letter-spacing: .02em; }
-      .title span { display: block; margin-top: 2px; color: #8ea3bf; font-size: 11px; }
-      .drag-hint {
-        color: #60748f;
+      .title-top {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .eyebrow {
+        color: var(--carbon);
+        font-family: var(--font-mono);
         font-size: 13px;
+        line-height: 1.3;
+        letter-spacing: 1.3px;
+        text-transform: uppercase;
+      }
+      .title strong {
+        display: block;
+        margin-top: 2px;
+        color: var(--ink);
+        font-size: 24px;
+        font-weight: 650;
+        letter-spacing: -.72px;
+        line-height: 1.25;
+      }
+      .status {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border: var(--hairline);
+        border-radius: var(--radius-pill);
+        color: var(--ink);
+        background: var(--linen);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        line-height: 1.35;
+        white-space: nowrap;
+        transition: color var(--ease), background-color var(--ease), border-color var(--ease);
+      }
+      .status::before {
+        content: "";
+        flex: 0 0 auto;
+        width: 6px;
+        height: 6px;
+        border-radius: var(--radius-pill);
+        background: currentColor;
+      }
+      .status[data-mode="live"] { background: var(--linen); }
+      .status[data-mode="frozen"] { background: var(--wash); }
+      .status[data-mode="picking"],
+      .status[data-mode="capturing"] { background: var(--saffron); }
+      .drag-hint {
+        flex: 0 0 auto;
+        color: var(--silver);
+        font-size: 13px;
+        line-height: 1.25;
         letter-spacing: -3px;
         pointer-events: none;
       }
-      .status[data-mode="live"] { color: #86efac; }
-      .status[data-mode="frozen"] { color: #7dd3fc; }
-      .status[data-mode="picking"],
-      .status[data-mode="capturing"] { color: #fde68a; }
       .icon-button {
-        width: 30px;
-        height: 30px;
-        border: 0;
-        border-radius: 8px;
-        color: #aabbd1;
-        background: rgba(148,163,184,.1);
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: var(--hairline);
+        border-radius: var(--radius-pill);
+        color: var(--ink);
+        background: var(--paper);
+        font-size: 13px;
+        line-height: 1.25;
+      }
+      .icon-button:hover { background: var(--linen); }
+      .panel.collapsed .collapse { font-size: 0; }
+      .panel.collapsed .collapse::before {
+        content: "+";
+        color: var(--ink);
+        font-size: 14px;
+        line-height: 1.25;
       }
       .panel-body {
         overflow: auto;
-        scrollbar-color: #334155 transparent;
+        scrollbar-color: var(--slate) transparent;
       }
-      section { padding: 12px 14px; border-bottom: 1px solid rgba(148,163,184,.13); }
+      section { padding: 16px; border-bottom: var(--hairline); }
       .row { display: flex; gap: 8px; align-items: center; }
       .row + .row { margin-top: 8px; }
       .state-row .state-select { flex: 1; min-width: 0; }
       .delete-state { flex: 0 0 auto; white-space: nowrap; }
       .primary, .secondary, .danger, .tool {
-        min-height: 34px;
-        border: 1px solid transparent;
-        border-radius: 9px;
-        padding: 7px 10px;
-        color: #dbeafe;
-        background: rgba(51,65,85,.75);
+        min-height: 36px;
+        border: var(--hairline);
+        border-radius: var(--radius-pill);
+        padding: 7px 14px;
+        color: var(--ink);
+        background: transparent;
+        font-size: 16px;
+        line-height: 1.25;
       }
       .primary {
         flex: 1;
-        color: #062132;
-        background: #67e8f9;
-        font-weight: 800;
+        border-radius: var(--radius-cta);
+        color: var(--paper);
+        background: var(--ink);
+        font-weight: 650;
       }
-      .secondary { flex: 1; border-color: rgba(148,163,184,.2); }
+      .primary:hover { background: var(--graphite); }
+      .secondary { flex: 1; background: var(--linen); }
+      .secondary:hover { background: var(--paper); }
       .secondary.active, .tool.active {
-        color: #07111f;
-        background: #fbbf24;
+        color: var(--ink);
+        background: var(--saffron);
+        border-color: var(--ink);
       }
-      button:disabled { cursor: not-allowed; opacity: .38; }
+      button:disabled { cursor: not-allowed; opacity: .45; }
       .tool-grid {
         display: grid;
-        grid-template-columns: repeat(5, 1fr);
-        gap: 6px;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
       }
-      .tool { min-width: 0; padding: 7px 4px; font-size: 12px; }
+      .tool {
+        min-width: 0;
+        padding: 8px 6px;
+        background: var(--linen);
+        white-space: nowrap;
+      }
+      .tool:hover { background: var(--paper); }
+      .tool.active:hover { background: var(--saffron); }
+      .tool-hint {
+        margin-top: 10px;
+        color: var(--carbon);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .manipulation-note {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: var(--hairline);
+        border-radius: var(--radius-card);
+        color: var(--ink);
+        background: var(--wash);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .manipulation-note.hidden { display: none; }
+      .group-hint,
+      .section-title > span + span {
+        color: var(--slate);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .group-name { flex: 1; min-width: 0; }
+      .group-members { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 10px; max-height: 132px; overflow: auto; }
+      .group-member {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+      .group-member input { width: 15px; height: 15px; accent-color: var(--ink); }
+      .group-member span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .group-list { display: grid; gap: 8px; margin-top: 10px; }
+      .group-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border: var(--hairline);
+        border-radius: var(--radius-card);
+        background: var(--paper);
+      }
+      .group-item-name { min-width: 0; height: 32px; font-size: 14px; }
+      .group-item-meta { color: var(--slate); font-size: 12px; line-height: 1.4; white-space: nowrap; }
+      .group-delete { min-height: 28px; padding: 3px 12px; font-size: 13px; }
       .section-title {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 8px;
-        color: #8ea3bf;
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: .08em;
+        gap: 10px;
+        margin-bottom: 12px;
+        color: var(--carbon);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 400;
+        letter-spacing: 1.3px;
+        line-height: 1.3;
         text-transform: uppercase;
+      }
+      .section-title > button {
+        flex: 0 0 auto;
+        min-height: 28px;
+        padding: 3px 12px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        letter-spacing: 0;
+        text-transform: none;
       }
       select, input, textarea {
         width: 100%;
-        border: 1px solid rgba(148,163,184,.26);
-        border-radius: 8px;
-        color: #e5eefc;
-        background: #111c2f;
+        border: var(--hairline);
+        border-radius: var(--radius-card);
+        color: var(--ink);
+        background: var(--paper);
         outline: none;
+        line-height: 1.5;
       }
-      select, input { height: 34px; padding: 0 9px; }
-      textarea { min-height: 68px; padding: 8px 9px; resize: vertical; }
+      select, input { height: 36px; padding: 0 10px; }
+      textarea { min-height: 76px; padding: 9px 10px; resize: vertical; }
+      ::placeholder { color: var(--slate); opacity: 1; }
+      option { line-height: 1.5; }
       select:focus, input:focus, textarea:focus {
-        border-color: #38bdf8;
-        box-shadow: 0 0 0 2px rgba(56,189,248,.14);
+        border-color: var(--ink);
+        box-shadow: 0 0 0 3px rgba(242,252,179,.9);
       }
-      label { display: block; margin-top: 9px; color: #aabbd1; font-size: 11px; }
-      label > span { display: block; margin-bottom: 5px; }
-      .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      label { display: block; margin-top: 12px; color: var(--carbon); font-size: 16px; line-height: 1.5; }
+      label > span { display: block; margin-bottom: 6px; }
+      .two-column { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
       .intent-heading {
         display: flex;
-        align-items: center;
+        align-items: baseline;
         justify-content: space-between;
         gap: 10px;
-        margin-top: 9px;
-        color: #aabbd1;
-        font-size: 11px;
+        margin-top: 12px;
+        color: var(--carbon);
+        font-size: 14px;
+        line-height: 1.4;
       }
-      .intent-heading strong { color: #dbeafe; font-size: 12px; }
-      .intent-heading-note { color: #6f849f; font-size: 10px; }
+      .intent-heading strong { color: var(--ink); font-size: 16px; font-weight: 650; }
+      .intent-heading-note { color: var(--slate); font-size: 12px; }
       .change-type-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 6px;
-        margin-top: 6px;
+        gap: 8px;
+        margin-top: 8px;
       }
       .change-type {
         min-width: 0;
-        min-height: 30px;
+        min-height: 32px;
         display: flex;
         align-items: center;
         justify-content: center;
         gap: 4px;
-        padding: 5px 4px;
-        border: 1px solid rgba(148,163,184,.26);
-        border-radius: 8px;
-        color: #aabbd1;
-        background: rgba(30,41,59,.72);
-        font-size: 11px;
-        line-height: 1.1;
+        padding: 6px 4px;
+        border: var(--hairline);
+        border-radius: var(--radius-pill);
+        color: var(--ink);
+        background: var(--linen);
+        font-size: 13px;
+        line-height: 1.25;
         white-space: nowrap;
       }
-      .change-type:hover {
-        border-color: rgba(125,211,252,.72);
-        color: #e5eefc;
-      }
+      .change-type:hover { background: var(--paper); }
       .change-type.selected {
-        border-color: #38bdf8;
-        color: #cffafe;
-        background: rgba(14,116,144,.35);
+        border-color: var(--ink);
+        color: var(--ink);
+        background: var(--wash);
       }
-      .change-type:focus-visible {
-        outline: 2px solid #67e8f9;
-        outline-offset: 2px;
-      }
+      .change-type.selected:hover { background: var(--wash); }
       .change-type-check {
         width: 11px;
-        color: #67e8f9;
-        font-weight: 900;
+        color: var(--ink);
+        font-size: 13px;
+        line-height: 1.25;
         opacity: 0;
       }
       .change-type.selected .change-type-check { opacity: 1; }
       .priority-field { width: min(156px, 100%); }
-      .annotation-list { display: grid; gap: 6px; }
+      .annotation-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
       .annotation-item {
         width: 100%;
         display: flex;
         align-items: center;
         gap: 8px;
-        border: 1px solid rgba(148,163,184,.15);
-        border-radius: 9px;
-        padding: 7px 8px;
-        color: #dbeafe;
+        padding: 10px 12px;
+        border: var(--hairline);
+        border-radius: var(--radius-card);
+        color: var(--ink);
+        background: var(--paper);
         text-align: left;
-        background: rgba(30,41,59,.66);
+        font-size: 16px;
+        line-height: 1.4;
       }
-      .annotation-item.selected { border-color: #38bdf8; background: rgba(14,116,144,.25); }
-      .annotation-item strong { color: #67e8f9; font-size: 12px; }
-      .annotation-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-      .empty { padding: 12px; color: #6f849f; text-align: center; font-size: 12px; }
+      .annotation-item:hover { background: var(--linen); }
+      .annotation-item.selected,
+      .annotation-item.selected:hover { background: var(--wash); }
+      .annotation-item strong {
+        flex: 0 0 auto;
+        color: var(--ink);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        letter-spacing: .6px;
+      }
+      .annotation-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+      .empty {
+        padding: 14px 12px;
+        border: 1px dashed var(--silver);
+        border-radius: var(--radius-card);
+        color: var(--slate);
+        text-align: center;
+        font-size: 16px;
+        line-height: 1.5;
+      }
       .editor.hidden, .output.hidden { display: none; }
-      .danger { color: #fecaca; border-color: rgba(248,113,113,.25); background: rgba(127,29,29,.35); }
+      .danger { color: var(--ink); border-color: var(--ink); background: transparent; }
+      .danger:hover { background: var(--linen); }
       .panel-footer {
-        padding: 12px 14px;
-        background: rgba(8,15,27,.98);
+        padding: 16px;
+        background: var(--bone);
       }
       .finish {
         width: 100%;
-        min-height: 40px;
-        border: 0;
-        border-radius: 10px;
-        color: #07111f;
-        background: linear-gradient(135deg,#67e8f9,#22d3ee);
-        font-weight: 900;
+        min-height: 44px;
+        border: var(--hairline);
+        border-radius: var(--radius-cta);
+        color: var(--paper);
+        background: var(--ink);
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.25;
+      }
+      .finish:hover { background: var(--graphite); }
+      .finish:disabled {
+        color: var(--slate);
+        background: var(--linen);
+        border-color: var(--silver);
+        opacity: 1;
       }
       .output {
-        margin-top: 9px;
-        padding: 8px;
-        border-radius: 8px;
-        color: #bbf7d0;
-        background: rgba(20,83,45,.4);
-        font-size: 11px;
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: var(--hairline);
+        border-radius: var(--radius-card);
+        color: var(--ink);
+        background: var(--paper);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.5;
         word-break: break-all;
       }
       .toast {
         position: fixed;
         left: 50%;
-        bottom: 22px;
+        bottom: 24px;
         max-width: 520px;
-        transform: translate(-50%, 20px);
-        padding: 10px 14px;
-        border: 1px solid rgba(148,163,184,.24);
-        border-radius: 10px;
-        color: #e5eefc;
-        background: rgba(15,23,42,.96);
-        box-shadow: 0 14px 40px rgba(0,0,0,.35);
+        transform: translate(-50%, 0);
+        padding: 12px 16px;
+        border: var(--hairline);
+        border-radius: var(--radius-card);
+        color: var(--ink);
+        background: var(--paper);
+        box-shadow: var(--shadow-sm);
+        font-size: 16px;
+        line-height: 1.5;
         opacity: 0;
-        transition: .18s ease;
+        transition:
+          color var(--ease),
+          background-color var(--ease),
+          border-color var(--ease),
+          opacity var(--ease);
         pointer-events: none;
       }
-      .toast.visible { opacity: 1; transform: translate(-50%, 0); }
-      .toast[data-tone="error"] { color: #fecaca; border-color: rgba(248,113,113,.5); }
-      .toast[data-tone="success"] { color: #bbf7d0; border-color: rgba(74,222,128,.5); }
+      .toast.visible { opacity: 1; }
+      .toast[data-tone="error"] { color: var(--paper); background: var(--void); border-color: var(--void); }
+      .toast[data-tone="success"] { color: var(--ink); background: var(--wash); border-color: var(--ink); }
+
+      /* Density toggle: pressed (aria-pressed="true") means compact, the default.
+         The glyph shows the density in force, the surface shows the pressed state. */
+      .density-toggle { font-size: 0; }
+      .density-toggle::before {
+        content: "舒";
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.25;
+      }
+      .density-toggle[aria-pressed="true"] {
+        border-color: var(--ink);
+        background: var(--saffron);
+      }
+      .density-toggle[aria-pressed="true"]::before { content: "密"; }
+
+      /* Compact density — the default. It only tightens spacing and type; every
+         control and section stays reachable. Expanded is the comfortable set above. */
+      .panel.compact .panel-header {
+        min-height: 48px;
+        gap: 10px;
+        padding: 10px 12px 9px;
+      }
+      .panel.compact .brand { width: 26px; height: 26px; font-size: 13px; }
+      .panel.compact .title strong {
+        font-size: 20px;
+        letter-spacing: -.6px;
+        line-height: 1.3;
+      }
+      .panel.compact .title .eyebrow { font-size: 13px; }
+      .panel.compact .status { padding: 2px 8px; }
+      .panel.compact .drag-hint { font-size: 12px; }
+      .panel.compact .icon-button { width: 26px; height: 26px; }
+      .panel.compact section { padding: 10px 12px; }
+      .panel.compact .section-title { margin-bottom: 8px; }
+      .panel.compact .row { gap: 5px; }
+      .panel.compact .row + .row { margin-top: 5px; }
+      .panel.compact .primary,
+      .panel.compact .secondary,
+      .panel.compact .danger,
+      .panel.compact .tool {
+        min-height: 30px;
+        padding: 4px 10px;
+        font-size: 14px;
+        line-height: 1.35;
+      }
+      .panel.compact .tool { padding: 4px 4px; }
+      .panel.compact .tool-grid { gap: 5px; }
+      .panel.compact .tool-hint {
+        margin-top: 5px;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .panel.compact label {
+        margin-top: 8px;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      .panel.compact label > span { margin-bottom: 4px; }
+      .panel.compact select,
+      .panel.compact input { height: 30px; padding: 0 8px; font-size: 14px; }
+      .panel.compact textarea {
+        min-height: 60px;
+        padding: 5px 8px;
+        font-size: 14px;
+      }
+      .panel.compact .empty {
+        padding: 8px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .panel.compact .annotation-list { gap: 5px; }
+      .panel.compact .annotation-item {
+        gap: 5px;
+        padding: 5px 8px;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      .panel.compact .annotation-item span { font-size: 14px; }
+      .panel.compact .group-members {
+        gap: 4px;
+        margin-top: 5px;
+        max-height: 96px;
+      }
+      .panel.compact .group-list { gap: 5px; margin-top: 5px; }
+      .panel.compact .group-item { gap: 5px; padding: 5px 8px; }
+      .panel.compact .group-item-name { height: 28px; font-size: 13px; }
+      .panel.compact .group-delete { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+      .panel.compact .group-member { font-size: 14px; line-height: 1.4; }
+      .panel.compact .group-member input { width: 13px; height: 13px; }
+      .panel.compact .group-members .empty { padding: 5px; font-size: 12px; }
+      .panel.compact .section-title > button {
+        min-height: 26px;
+        padding: 2px 10px;
+        font-size: 12px;
+      }
+      .panel.compact .intent-heading { margin-top: 8px; }
+      .panel.compact .intent-heading strong { font-size: 14px; }
+      .panel.compact .intent-heading-note { font-size: 11px; }
+      .panel.compact .change-type-grid { gap: 5px; margin-top: 5px; }
+      .panel.compact .change-type {
+        min-height: 26px;
+        padding: 4px 3px;
+        font-size: 12px;
+        line-height: 1.3;
+      }
+      .panel.compact .change-type-check { width: 10px; font-size: 12px; }
+      .panel.compact .manipulation-note {
+        margin-top: 8px;
+        padding: 5px 8px;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .panel.compact .two-column { gap: 5px; }
+      .panel.compact .panel-footer { padding: 10px 12px; }
+      .panel.compact .finish { min-height: 36px; font-size: 14px; }
+      .panel.compact .output {
+        margin-top: 8px;
+        padding: 5px 8px;
+        font-size: 11px;
+        line-height: 1.45;
+      }
       @media (max-width: 700px) {
         .panel { top: 8px; right: 8px; width: min(356px, calc(100vw - 16px)); max-height: calc(100vh - 16px); }
+        .panel.collapsed { width: min(296px, calc(100vw - 16px)); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        button, input, textarea, select, .status, .toast { transition: none; }
       }
     `;
 
@@ -1558,15 +2581,19 @@
     pickerHighlight.className = "picker-highlight";
 
     const panel = document.createElement("aside");
-    panel.className = "panel";
+    panel.className = "panel compact";
     panel.innerHTML = `
       <header class="panel-header" title="按住顶部空白处拖动浮窗">
         <div class="brand">S</div>
         <div class="title">
+          <div class="title-top">
+            <span class="eyebrow">SYMBUI</span>
+            <span class="status" data-mode="live">实时</span>
+          </div>
           <strong>SymbUI</strong>
-          <span class="status" data-mode="live">实时</span>
         </div>
         <span class="drag-hint" aria-hidden="true">⠿</span>
+        <button class="icon-button density-toggle" type="button" title="切换密度：紧凑／展开" aria-pressed="true">密度</button>
         <button class="icon-button collapse" type="button" title="折叠">—</button>
       </header>
       <div class="panel-body">
@@ -1588,15 +2615,28 @@
             <button class="tool" type="button" data-tool="point">点</button>
             <button class="tool" type="button" data-tool="arrow">箭头</button>
             <button class="tool" type="button" data-tool="redact">遮挡</button>
-            <button class="tool undo" type="button">撤销</button>
+            <button class="tool" type="button" data-tool="move" title="拖动真实页面元素，记录位移量（CSS px）">移动</button>
+            <button class="tool" type="button" data-tool="resize" title="从元素某个角拖动，记录尺寸变化（CSS px）">缩放</button>
+            <button class="tool undo" type="button" title="删除最后一条标注">撤销</button>
           </div>
+          <div class="tool-hint">移动／缩放作用于真实页面元素：before 取自 getBoundingClientRect()，位移量单位是 CSS px。</div>
         </section>
         <section>
           <div class="section-title"><span>标注列表</span><button class="danger delete" type="button">删除所选</button></div>
           <div class="annotation-list"></div>
         </section>
+        <section>
+          <div class="section-title"><span>命名分组</span><span class="group-hint">勾选要一起改的标注</span></div>
+          <div class="row">
+            <input class="group-name" maxlength="64" placeholder="分组名称，例如：主操作区">
+            <button class="secondary group-create" type="button">建立分组</button>
+          </div>
+          <div class="group-members"></div>
+          <div class="group-list"></div>
+        </section>
         <section class="editor hidden">
           <div class="section-title"><span class="editor-title">修改说明</span></div>
+          <label><span>名称（可选，给这条标注起个名字）</span><input class="alias" maxlength="64" placeholder="例如：UpgradeButton"></label>
           <div class="intent-heading">
             <strong>想改什么？（可多选）</strong>
             <span class="intent-heading-note">悬停查看说明</span>
@@ -1616,6 +2656,7 @@
               <option value="should">建议</option>
             </select>
           </label>
+          <div class="manipulation-note hidden"></div>
           <label><span>希望改完后是什么样？（必填）</span><textarea class="expected" placeholder="例如：先选择“想改什么”，再描述修改完成后应看到或发生什么"></textarea></label>
           <div class="two-column">
             <label><span>作用范围</span>
@@ -1673,6 +2714,12 @@
       breakpoint: panel.querySelector(".breakpoint"),
       priority: panel.querySelector(".priority"),
       invariants: panel.querySelector(".invariants"),
+      alias: panel.querySelector(".alias"),
+      manipulationNote: panel.querySelector(".manipulation-note"),
+      groupName: panel.querySelector(".group-name"),
+      groupCreate: panel.querySelector(".group-create"),
+      groupMembers: panel.querySelector(".group-members"),
+      groupList: panel.querySelector(".group-list"),
       finish: panel.querySelector(".finish"),
       output: panel.querySelector(".output"),
       toast,
@@ -1680,6 +2727,15 @@
 
     panel.querySelector(".collapse").addEventListener("click", () => {
       panel.classList.toggle("collapsed");
+      requestAnimationFrame(clampCurrentPanel);
+    });
+
+    const densityToggle = panel.querySelector(".density-toggle");
+    densityToggle.addEventListener("click", () => {
+      // Compact is the default: the toggle only swaps density, it never hides a
+      // control, and it stays independent from the .collapsed panel state.
+      const compact = panel.classList.toggle("compact");
+      densityToggle.setAttribute("aria-pressed", String(compact));
       requestAnimationFrame(clampCurrentPanel);
     });
     app.ui.panelHeader.addEventListener("pointerdown", startPanelDrag);
@@ -1718,11 +2774,27 @@
       field.addEventListener("input", updateSelectedIntent);
       field.addEventListener("change", updateSelectedIntent);
     }
+    // A name is a display affordance: it never replaces the id or the target
+    // evidence, and an empty box means the annotation simply has no name.
+    app.ui.alias.addEventListener("input", () => {
+      const annotation = selectedAnnotation();
+      if (!annotation) return;
+      const value = app.ui.alias.value.trim().slice(0, 64);
+      if (value) annotation.alias = value;
+      else delete annotation.alias;
+    });
+    app.ui.alias.addEventListener("change", renderAnnotationList);
+    app.ui.groupCreate.addEventListener("click", createGroup);
+    app.ui.groupName.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      createGroup();
+    });
     app.ui.finish.addEventListener("click", finishSession);
     stage.addEventListener("pointerdown", stagePointerDown);
     stage.addEventListener("pointermove", stagePointerMove);
     stage.addEventListener("pointerup", stagePointerUp);
-    stage.addEventListener("pointercancel", stagePointerUp);
+    stage.addEventListener("pointercancel", stagePointerCancel);
     window.addEventListener("resize", clampCurrentPanel);
     document.addEventListener(
       "keydown",

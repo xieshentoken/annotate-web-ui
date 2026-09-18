@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export const SCHEMA_VERSION = "1.2";
-export const SUPPORTED_SCHEMA_VERSIONS = new Set(["1.0", "1.1", "1.2"]);
+export const SCHEMA_VERSION = "1.3";
+export const SUPPORTED_SCHEMA_VERSIONS = new Set(["1.0", "1.1", "1.2", "1.3"]);
 
 export async function pathExists(target) {
   try {
@@ -36,6 +36,19 @@ export function sessionFile(sessionDir, ...parts) {
 // on read keeps every downstream step working on one shape.
 export function normalizeSession(raw) {
   const session = { ...raw };
+  /* A version that is present but unrecognized is refused, not silently
+   * rewritten: stamping our own version onto a shape we do not understand is
+   * how a "this is not my format" signal gets lost. A missing version is the
+   * historical `1.0` session, which normalizes as before. */
+  if (
+    session.schemaVersion !== undefined &&
+    session.schemaVersion !== null &&
+    !SUPPORTED_SCHEMA_VERSIONS.has(session.schemaVersion)
+  ) {
+    throw new Error(
+      `Unsupported session schemaVersion ${JSON.stringify(session.schemaVersion)}; supported versions are ${[...SUPPORTED_SCHEMA_VERSIONS].join(", ")}.`,
+    );
+  }
   if (!Array.isArray(session.revisions)) session.revisions = [];
   if (!Array.isArray(session.rounds)) session.rounds = [];
   session.normalizedFrom = session.schemaVersion || "1.0";

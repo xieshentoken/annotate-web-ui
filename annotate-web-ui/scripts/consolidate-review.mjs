@@ -154,6 +154,23 @@ function uniqueIds(annotations) {
     return { ...annotation, id };
   });
 }
+/* 轮次折叠时分组要跟着成员走：已判定达成的标注不再需要改动，必须从成员里移除；
+ * 成员被删空的组直接丢弃。`cohesion` 原样保留 —— 它是用户当初框选时算出的事实，
+ * 按剩下的成员重算会悄悄换掉用户真正要的那条指令。 */
+export function pruneGroups(groups, closedIds) {
+  const closed = new Set(closedIds);
+  const kept = [];
+  for (const group of Array.isArray(groups) ? groups : []) {
+    if (!group || !Array.isArray(group.annotationIds)) {
+      kept.push(group);
+      continue;
+    }
+    const remaining = group.annotationIds.filter((id) => !closed.has(id));
+    if (remaining.length === 0) continue;
+    kept.push({ ...group, annotationIds: remaining });
+  }
+  return kept;
+}
 
 /* 锚点覆盖率。只有编译期的 `data-ui-source` 元数据能让候选升到 `exact`；没有它时
  * 每个目标都只是文本推导的候选，写清楚比让读者自己翻候选列表要好。
@@ -225,6 +242,74 @@ function resolverSection(index, repoPath, annotations) {
   return lines;
 }
 
+const COHESION_LABELS = {
+  container: "同一容器",
+  component: "同一组件",
+  mixed: "混合",
+};
+
+function groupMemberLabel(annotation, id) {
+  return annotation?.alias ? `${id}（${annotation.alias}）` : id;
+}
+
+function groupContainerLabel(group) {
+  const anchor = group.container?.anchor;
+  if (anchor?.file) {
+    return `\`${anchor.file}:${anchor.line ?? "?"}${anchor.component ? `（${anchor.component}）` : ""}\``;
+  }
+  if (group.containerKey) return `\`${group.containerKey}\``;
+  return "共同的捕获祖先";
+}
+
+function groupComponentLabel(group, byId) {
+  const ids = Array.isArray(group.annotationIds) ? group.annotationIds : [];
+  for (const id of ids) {
+    const annotation = byId.get(id);
+    const component =
+      annotation?.target?.componentName ||
+      annotation?.sourceCandidates?.[0]?.element?.component;
+    if (component) return component;
+  }
+  return null;
+}
+
+/* 分组只有在产物里写清楚才有意义，而措辞完全取决于 `cohesion`：能说「在这个容器
+ * 内统一调整」时就说，不能时就逐个列出 —— 绝不留机会让 agent 自己编一个容器。 */
+function groupsSection(session, annotations) {
+  const groups = Array.isArray(session.groups) ? session.groups : [];
+  if (groups.length === 0) return [];
+  const byId = new Map(
+    annotations.map((annotation) => [annotation.id, annotation]),
+  );
+  const lines = ["## Groups", ""];
+  for (const group of groups) {
+    const ids = Array.isArray(group.annotationIds) ? group.annotationIds : [];
+    const label = COHESION_LABELS[group.cohesion]
+      ? `${group.cohesion} / ${COHESION_LABELS[group.cohesion]}`
+      : group.cohesion || "mixed";
+    lines.push(`### ${group.name || group.id}（内聚：${label}）`, "");
+    lines.push(
+      `- 成员：${ids.map((id) => groupMemberLabel(byId.get(id), id)).join("、") || "（无）"}`,
+    );
+    if (group.cohesion === "container") {
+      lines.push(
+        `- 成员同属一个捕获到的容器 ${groupContainerLabel(group)}：可以要求「在这个容器内统一调整」，不必逐条重述。`,
+      );
+    } else if (group.cohesion === "component") {
+      const component = groupComponentLabel(group, byId);
+      lines.push(
+        `- 成员没有共同祖先，但都落在同一个组件${component ? ` \`${component}\`` : ""}：按这个组件提出一次调整，不要改写成某个容器。`,
+      );
+    } else {
+      lines.push(
+        "- 成员既没有共同容器，也不属于同一个组件：必须逐个列出并逐个调整，禁止自行虚构一个容器把它们包起来。",
+      );
+    }
+    lines.push("");
+  }
+  return lines;
+}
+
 function changeRequestMarkdown({ session, round, open, closed, fresh, deduped, conflicts, duplicates, unresolved, index, repoPath, nextRoundId: nextId, maxRounds, reachedLimit }) {
   const lines = [
     `# Web UI Change Request — ${nextId}`,
@@ -251,7 +336,9 @@ function changeRequestMarkdown({ session, round, open, closed, fresh, deduped, c
   } else {
     lines.push("以下标注已验证通过，本轮不再处理：", "");
     for (const annotation of closed) {
-      lines.push(`- ~~${annotation.id}~~ ${annotation.intent?.expected || ""}`);
+      lines.push(
+        `- ~~${annotation.id}~~${annotation.alias ? `（${annotation.alias}）` : ""} ${annotation.intent?.expected || ""}`,
+      );
     }
     lines.push("");
   }
@@ -266,7 +353,8 @@ function changeRequestMarkdown({ session, round, open, closed, fresh, deduped, c
     lines.push(`### ${title}`, "");
     if (note) lines.push(note, "");
     for (const annotation of list) {
-      lines.push(`#### ${annotation.id} — ${operationsLabel(annotation)}`, "");
+      const alias = annotation.alias ? `（${annotation.alias}）` : "";
+      lines.push(`#### ${annotation.id}${alias} — ${operationsLabel(annotation)}`, "");
       lines.push(`- 目标：\`${targetLabel(annotation)}\``);
       if (annotation.sourceCandidates?.length) {
         lines.push("- 源码候选：");
@@ -308,6 +396,8 @@ function changeRequestMarkdown({ session, round, open, closed, fresh, deduped, c
   section("未达成或部分达成，需要继续改", open, "这些是上一轮标注中未通过的部分，附带了实际观测到的变更。");
   section("复审新增意见", fresh, "这些是在改动后的页面上直接标注或拖动产生的。");
 
+  lines.push(...groupsSection(session, deduped));
+
   if (conflicts.length || duplicates.length || unresolved.length) {
     lines.push("## 需要人工裁决", "");
     for (const conflict of conflicts) {
@@ -330,7 +420,7 @@ function changeRequestMarkdown({ session, round, open, closed, fresh, deduped, c
   lines.push("");
   lines.push("## 验收标准", "");
   for (const annotation of [...open, ...fresh]) {
-    lines.push(`- [ ] ${annotation.id}：${annotation.intent?.expected || "（未填写）"}`);
+    lines.push(`- [ ] ${annotation.id}${annotation.alias ? `（${annotation.alias}）` : ""}：${annotation.intent?.expected || "（未填写）"}`);
   }
   lines.push("- [ ] 在捕获的每个视口与状态下复核页面。");
   lines.push("");
@@ -369,11 +459,13 @@ function implementationPrompt({ session, round, nextId, requestPath, inputPath, 
     const best = annotation.sourceCandidates?.[0];
     const where = best ? ` @ ${best.file}:${best.line}（${best.confidence}）` : "";
     lines.push(
-      `- ${annotation.id}${where}：${annotation.intent?.expected || "（未填写）"} [类型=${operationsLabel(annotation)}，范围=${
+      `- ${annotation.id}${annotation.alias ? `（${annotation.alias}）` : ""}${where}：${annotation.intent?.expected || "（未填写）"} [类型=${operationsLabel(annotation)}，范围=${
         SCOPE_LABELS[annotation.intent?.scope] || annotation.intent?.scope || "仅此元素"
       }，断点=${BREAKPOINT_LABELS[annotation.intent?.breakpoint] || annotation.intent?.breakpoint || "全部"}]`,
     );
   }
+
+  lines.push(...groupsSection(session, annotations));
   lines.push("");
   lines.push("完成后由复审流程重新抓取同一组状态，逐条核对，不需要你自证完成。");
   lines.push("");
@@ -441,6 +533,18 @@ function collectUnresolved(annotations, index) {
   return unresolved;
 }
 
+/* The export gate the schema states: a manipulating annotation with no
+ * `intent.expected` must never reach a prompt. A delta is a measurement, not
+ * an instruction — only the user can say which mechanism it stands for — so
+ * consolidation stops rather than rendering a bare delta as a change. */
+function unexportableManipulations(annotations) {
+  return annotations.filter(
+    (annotation) =>
+      annotation.manipulation &&
+      String(annotation.intent?.expected ?? "").trim() === "",
+  );
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.session) {
@@ -488,12 +592,38 @@ async function main() {
     return verdict && verdict.status === "satisfied";
   });
 
+  /* 被关掉的标注不再需要改动，就必须从各分组的成员里移除；成员因此变空的组直接
+   * 丢弃。`cohesion` 不重算。 */
+  if (Array.isArray(session.groups)) {
+    session.groups = pruneGroups(
+      session.groups,
+      closed.map((annotation) => annotation.id),
+    );
+  }
+
   // Annotations drawn in the review UI apply to the revision they were drawn
   // on, which becomes the next round's baseline.
   const fresh = round.reviewAnnotations.map((annotation) => ({
     ...annotation,
     revisionId: round.toRevision,
   }));
+
+  /* The export gate, run before the resolver index is built and before a single
+   * artifact is written. This is the first point where both halves of the next
+   * round — the re-issued annotations that were not satisfied and the ones
+   * drawn in the review UI — are assembled under their final shape, so it is
+   * the earliest place that can stop a bare delta from reaching
+   * `change-request-<R>.md` or `implementation-prompt-<R>.md`. Only
+   * manipulating annotations are gated: a plain annotation still renders its
+   * `（未填写）` placeholder exactly as before. */
+  const unexportable = unexportableManipulations([...open, ...fresh]);
+  if (unexportable.length > 0) {
+    throw new Error(
+      `以下标注带有直接操作（manipulation）但没有填写「期望结果」，不得导出：${unexportable
+        .map((annotation) => annotation.id)
+        .join("、")}。拖动或缩放产生的 Δ 只是测量值而不是指令，请先补全「期望结果」再汇总。本轮未写出任何产物。`,
+    );
+  }
 
   /* Source resolution for the carried set. Both halves need it, for different
    * reasons:
@@ -523,6 +653,8 @@ async function main() {
     ...openResolved.map((annotation) => ({ ...annotation, revisionId: round.toRevision, carriedFrom: round.id })),
     ...freshResolved.map((annotation) => ({ ...annotation, revisionId: round.toRevision, carriedFrom: null })),
   ];
+  /* `uniqueIds` 只在 id 冲突时改显示名，展开赋值让 `alias` 原样跟着走：名字不是
+   * 身份，任何一步都不允许丢掉或改写它。 */
   const deduped = uniqueIds(carried);
   const { conflicts, duplicates } = detectConflicts(deduped);
 

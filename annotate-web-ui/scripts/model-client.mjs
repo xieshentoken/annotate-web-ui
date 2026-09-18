@@ -54,7 +54,7 @@ export function buildReviewInput({ session, round, diff, annotations }) {
 
   return {
     task: "verdicts",
-    schemaVersion: "1.2",
+    schemaVersion: "1.3",
     sessionId: session.sessionId,
     roundId: round.id,
     fromRevision: round.fromRevision,

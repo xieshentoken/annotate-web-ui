@@ -38,6 +38,11 @@
   };
 
   var MAX_ELEMENTS = 4000;
+  // Node -> final key, published by every collect() pass so that
+  // __SYMBUI_KEY_FOR__ answers from the same code path that builds the
+  // inventory. A second key algorithm would drift and silently break the
+  // diff alignment that depends on it.
+  var keyByNode = null;
 
   function text(value, limit) {
     return String(value == null ? "" : value).replace(/\s+/g, " ").trim().slice(0, limit || 120);
@@ -431,6 +436,15 @@
       if (elements[index].unstable) unstable += 1;
     }
 
+    // Keep this pass's node -> key mapping alive; the records themselves are
+    // rebuilt on every collect() but the key each node resolved to is what
+    // __SYMBUI_KEY_FOR__ has to answer with.
+    var nodeKeys = new Map();
+    recordByNode.forEach(function (record, node) {
+      if (record.key) nodeKeys.set(node, record.key);
+    });
+    keyByNode = nodeKeys;
+
     return {
       stateId: settings.stateId || null,
       url: location.href,
@@ -451,6 +465,38 @@
     };
   }
 
+  // The key of an element, or of its nearest captured ancestor when the
+  // element itself is not in the inventory: a zero-size node, a <script>, or
+  // anything the collector skipped still belongs to whatever container was
+  // captured around it. This only queries the mapping collect() published; it
+  // never recomputes a key.
+  function keyFor(element) {
+    if (!element || !keyByNode) return null;
+    var node = element;
+    var hops = 0;
+    while (node && hops <= 40) {
+      var key = keyByNode.get(node);
+      if (key) return key;
+      node = node.parentElement;
+      hops += 1;
+    }
+    return null;
+  }
+
+  // `exact` separates the element's own identity from an ancestor fallback.
+  // The fallback answers "which captured container does this belong to", which
+  // grouping needs, but a direct manipulation's key must be the element's own:
+  // an ancestor's key attributes the gesture to its container and the next
+  // capture measures the wrong box. Only `exact: true` qualifies there.
+  function keyInfoFor(element) {
+    if (!element || !keyByNode) return { key: null, exact: false };
+    var own = keyByNode.get(element);
+    if (own) return { key: own, exact: true };
+    return { key: keyFor(element), exact: false };
+  }
+
   window.__SYMBUI_INVENTORY__ = collect;
+  window.__SYMBUI_KEY_FOR__ = keyFor;
+  window.__SYMBUI_KEY_INFO__ = keyInfoFor;
   window.__SYMBUI_INVENTORY_VERSION__ = "1.2";
 })();

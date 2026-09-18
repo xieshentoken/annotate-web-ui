@@ -106,6 +106,12 @@ Tell the user that the isolated browser is ready. Let the user operate the page
 and annotation panel directly. Wait for the controller to print
 `SYMBUI_SESSION_DIR=...`.
 
+The panel is not read-only. In this first pass the user can name an element, group
+several annotations under one name, and drag or resize an element in place to
+state a target layout. A manipulated element still needs a written expected
+result before the session will export, and a drag is measured against the
+element's captured geometry rather than against screenshot pixels.
+
 ### 3. Review the generated bundle
 
 The controller validates and compiles the session automatically. Read:
@@ -175,6 +181,13 @@ produced no new annotations, or until `review.maxRounds` is reached.
 Never consolidate a round that still has an unresolved conflict on the same
 target. Report it and let the user decide.
 
+Consolidation refuses to write the next request when a manipulating annotation
+has no written `expected` result, and names the annotations that blocked it. A
+dragged element without a stated intent is a measurement, not an instruction, and
+that holds on this path as much as it does on the first request: a bare delta
+must not reach a coding agent by the round-trip route either. Ask the reviewer for
+the missing intent rather than filling it in on their behalf.
+
 ## Runtime behavior
 
 The injected toolbar provides:
@@ -185,9 +198,21 @@ The injected toolbar provides:
 - viewport freezing through a native browser screenshot;
 - deletion of a frozen page together with its annotations and captured files;
 - box, point, arrow, and redaction annotations;
+- move and resize of a live element, recorded as an exact CSS-pixel delta against
+  the element's own captured geometry;
+- a human name for an annotation, and named groups of annotations;
 - structured intent fields;
 - multiple captured page states;
 - undo, deletion, and local export.
+
+A drag or a resize is a gesture, not an instruction. It records the geometry the
+reviewer asked for, but the number alone cannot tell a coding agent whether the
+source of truth is a `gap`, an `order`, a `flex-basis`, or a breakpoint. So a
+manipulating annotation must carry a written `expected` result, and the skill
+refuses to export one without it. Groups are the same kind of claim: `cohesion`
+says whether the members genuinely share a container, merely share a component,
+or share nothing, and a `mixed` group is never handed to a coding agent as a
+container it may guess at.
 
 Use the keyboard shortcut `Control/Command + Shift + A` to freeze or return to
 the live page without dismissing an open menu or tooltip.

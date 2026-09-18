@@ -21,6 +21,7 @@ import { isAllowedLocalUrl, validateSessionData } from "./validate-session.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OVERLAY_PATH = path.resolve(SCRIPT_DIR, "../assets/overlay.js");
+const PROBE_PATH = path.resolve(SCRIPT_DIR, "../assets/inventory-probe.js");
 
 function parseArgs(argv) {
   const result = {};
@@ -325,6 +326,7 @@ async function main() {
   await mkdir(sessionDir, { recursive: true });
   const profileDir = await mkdtemp(path.join(os.tmpdir(), "symbui-chrome-"));
   const overlaySource = await readFile(OVERLAY_PATH, "utf8");
+  const probeSource = await readFile(PROBE_PATH, "utf8");
   const staticRuntime = staticSite ? await startStaticSite(staticSite) : null;
   const targetUrl = staticRuntime?.url || externalTargetUrl;
   const createdAt = new Date().toISOString();
@@ -335,6 +337,10 @@ async function main() {
       repoPath,
       targetUrl,
     })};`,
+    // The probe lands first: the overlay resolves element keys through the
+    // mapping the probe publishes, and a first-pass drag has to record the
+    // same key the inventory will use for that element.
+    probeSource,
     overlaySource,
   ].join("\n");
 
