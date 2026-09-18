@@ -473,7 +473,7 @@ ERROR: annotations must contain at least one annotation.
 ```
 
 影响：`SKILL.md:127` 记载的"编译中断后重跑校验/重编译"这条恢复路径，以及任何在复审轮次之后重跑 `buildChangeSpec` 的调用，都会失败。复现：先用 `node tests/review-loop-demo.mjs` 生成演示会话（demo 产物已被清理），再运行
-`node annotate-web-ui/scripts/validate-session.mjs .workbuddy-ai/demo/review-loop/session`。
+`node annotate-web-ui/scripts/validate-session.mjs .symbui/demo/review-loop/session`。
 
 **不能靠"归一化后再校验"简单修掉**：state id 按 schema 要求**必须跨 revision 稳定**（"State IDs must be stable across revisions"），所以把多 revision 的 states 扁平合并会报出大量**假的重复 id 错误**（我用扁平化试过，正是这个结果）。正确的修法是让 id 唯一性按 revision / round **分作用域**校验，同时允许已捕获的 revision 没有 `annotatedImage`（复审捕获只产出 before 图，`annotatedImage` 为 `null`）。这是一次独立的校验器语义重设计，建议单独排期。
 
@@ -526,7 +526,7 @@ P2（handoff 授权边界）与 P3（外部站点探针 + 参考设计分层）�
 #### 两个必须记住的运行事实（都是实测踩出来的）
 
 1. **首轮浮窗的按钮"消失"问题不是代码缺陷。** 用户实测看不到「移动/缩放」，实际是**宿主按 session 缓存的 skill 快照**（`<host-cache>/skills/annotate-webui/`，Sep 18 14:02:58、58905 字节、4 个工具）早于 P1 落地 1.5 小时；仓库当前版本（15:30:21、85240 字节）6 个工具齐全且实测全部可见。skill 是按 session 快照的，所以**新开 session 才会拿到当前仓库**。
-2. **复审 UI 改源文件是生效的，但不要直接服务 demo 产物。** `scripts/review-session.mjs:126` 会把源 `assets/review.html` 拷进轮次目录，所以运行时看到的就是源文件。而 `review-loop-demo.mjs` 生成的复审判次目录里那份 `review.html` 是**生成时的产物**——第一次独立验证时我直接服务了它，量出来仍是旧配色（body `#f6f6f4`、按钮 `#185fa5`、圆角 8px），差点误判成改造没生效。验证时必须先把源文件拷进被服务的目录（`.workbuddy-ai/demo/` 下的产物已清理，需要时用 `node tests/review-loop-demo.mjs` 重新生成）。
+2. **复审 UI 改源文件是生效的，但不要直接服务 demo 产物。** `scripts/review-session.mjs:126` 会把源 `assets/review.html` 拷进轮次目录，所以运行时看到的就是源文件。而 `review-loop-demo.mjs` 生成的复审判次目录里那份 `review.html` 是**生成时的产物**——第一次独立验证时我直接服务了它，量出来仍是旧配色（body `#f6f6f4`、按钮 `#185fa5`、圆角 8px），差点误判成改造没生效。验证时必须先把源文件拷进被服务的目录（`.symbui/demo/` 下的产物已清理，需要时用 `node tests/review-loop-demo.mjs` 重新生成）。
 
 #### 验证证据（独立复跑，非子代理自述）
 

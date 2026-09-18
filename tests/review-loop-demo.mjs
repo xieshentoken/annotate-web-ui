@@ -249,7 +249,7 @@ const reviewOutput = {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const outDir = path.resolve(args.out || path.join(ROOT, ".workbuddy-ai", "demo", "review-loop"));
+  const outDir = path.resolve(args.out || path.join(ROOT, ".symbui", "demo", "review-loop"));
   await rm(outDir, { recursive: true, force: true });
   const sessionDir = path.join(outDir, "session");
   const serveDir = path.join(outDir, "served");

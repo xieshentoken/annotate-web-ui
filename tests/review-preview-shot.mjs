@@ -104,7 +104,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const reviewDir = path.resolve(
     args.dir ||
-      path.join(ROOT, ".workbuddy-ai", "demo", "review-loop", "session", "rounds", "R1", "review"),
+      path.join(ROOT, ".symbui", "demo", "review-loop", "session", "rounds", "R1", "review"),
   );
   const outDir = path.resolve(args.out || path.join(reviewDir, "shots"));
   await mkdir(outDir, { recursive: true });

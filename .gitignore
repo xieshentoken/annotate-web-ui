@@ -3,8 +3,8 @@
 .DS_Store
 node_modules/
 
-# Local demo and memory artifacts written by tests/review-loop-demo.mjs.
-.workbuddy-ai/
+# Local demo artifacts written by tests/review-loop-demo.mjs (under the session
+# root above).
 
 # Vite leaves these behind when a config file fails to load.
 vite.config.*.timestamp-*.mjs
