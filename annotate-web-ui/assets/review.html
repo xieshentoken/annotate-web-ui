@@ -766,7 +766,9 @@ function paintOverlay(overlay, state, scale) {
     }));
   }
 
-  if (app.selection.length === 1 && app.tool === "resize") {
+  // Handles follow the selection, not the tool: one selected element means eight
+  // handles, in every mode, so the affordance is never visible but inert.
+  if (app.selection.length === 1) {
     const element = state.after.elements.find((item) => item.key === app.selection[0]);
     if (element) {
       const r = element.rect;
@@ -775,15 +777,20 @@ function paintOverlay(overlay, state, scale) {
         e: [r.x + r.width, r.y + r.height / 2], se: [r.x + r.width, r.y + r.height],
         s: [r.x + r.width / 2, r.y + r.height], sw: [r.x, r.y + r.height], w: [r.x, r.y + r.height / 2],
       };
-      // Sizes are derived in view-box units from a constant CSS-pixel target, so a
-      // handle stays the same size on screen at every zoom. A fixed 8 units shrank
-      // to about 3px at the default fit zoom, which is why it could not be grabbed.
-      // The grab rect sits under the mark and gives a pointer target larger than it.
+      // Sizes are derived in view-box units from a CSS-pixel target, so a handle
+      // keeps its size on screen at every zoom. A fixed 8 units shrank to about
+      // 3px at the default fit zoom, which is why it could not be grabbed.
+      // The target is capped against the element's own on-screen size: on a thin
+      // element a fixed 24px target reached across the interior, so a press meant
+      // to drag the element landed on a handle instead.
       const unit = 1 / scale;
+      const shortSide = Math.min(r.width, r.height) * scale;
+      const markPx = Math.max(6, Math.min(11, shortSide * 0.5));
+      const grabPx = Math.max(8, Math.min(24, shortSide * 0.6));
+      const grab = grabPx * unit;
+      const mark = markPx * unit;
       for (const name of HANDLES) {
         const [cx, cy] = points[name];
-        const grab = 24 * unit;
-        const mark = 11 * unit;
         overlay.append(svg("rect", {
           class: `handle-grab ${name}`, "data-handle": name,
           x: cx - grab / 2, y: cy - grab / 2, width: grab, height: grab,
@@ -835,8 +842,18 @@ function bindPane(pane, overlay, state, scale) {
     const handle = handleHit(event);
     const element = elementAt(state, point.x, point.y);
 
-    // A kind is a drawing mode, so it is resolved first: a press draws instead
-    // of selecting, and a resize handle must not take the gesture away.
+    // A handle is a visible affordance, so it answers first. Whenever exactly one
+    // element is selected the handles are drawn in every tool, and grabbing one
+    // resizes; in drawing mode that costs only the eight small spots they occupy.
+    if (handle && app.selection.length === 1) {
+      const current = state.after.elements.find((item) => item.key === app.selection[0]);
+      app.drag = { mode: "resize", handle, key: current.key, origin: { ...current.rect }, start: point, preview: { ...current.rect } };
+      pane.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    // A kind is a drawing mode, so it is resolved next: a press draws instead of
+    // selecting, which is what the inspect branches below would otherwise do.
     if (app.tool === "annotate") {
       if (app.kind === "point") {
         addAnnotation(state, {
@@ -850,12 +867,6 @@ function bindPane(pane, overlay, state, scale) {
         return;
       }
       app.draw = { start: point, preview: null };
-      pane.setPointerCapture(event.pointerId);
-      return;
-    }
-    if (handle && app.selection.length === 1) {
-      const current = state.after.elements.find((item) => item.key === app.selection[0]);
-      app.drag = { mode: "resize", handle, key: current.key, origin: { ...current.rect }, start: point, preview: { ...current.rect } };
       pane.setPointerCapture(event.pointerId);
       return;
     }
